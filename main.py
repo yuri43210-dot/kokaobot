@@ -1,10 +1,16 @@
+import os
 from fastapi import FastAPI
 import requests
 
 app = FastAPI()
 
-SUPABASE_URL = "https://wqqfqinhiytntextpjey.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndxcWZxaW5oaXl0bnRleHRwamV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMzIyNjksImV4cCI6MjA5MDYwODI2OX0.Cm8FtLiuzbv3sU0_TarpK_mowHqAbUB3xZFW0d2foNQ"
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
+DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://yourblog.com").strip()
+
+@app.get("/")
+async def root():
+    return {"message": "kakaobot server running"}
 
 @app.post("/kakao/market-summary")
 async def market_summary():
@@ -15,11 +21,12 @@ async def market_summary():
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, timeout=20)
     data = response.json()
 
     latest = data[0]
     text = latest["full_text"]
+    post_url = latest.get("post_url") or DEFAULT_BLOG_URL
 
     return {
         "version": "2.0",
@@ -32,13 +39,13 @@ async def market_summary():
                 },
                 {
                     "basicCard": {
-                        "title": "📊 경제지표 자세히 보기",
-                        "description": "환율, 금리, 글로벌 흐름을 블로그에서 확인하세요.",
+                        "title": "📊 오늘 시장 풀분석 보기",
+                        "description": "장마감 해설과 내일 체크포인트를 블로그에서 확인하세요.",
                         "buttons": [
                             {
                                 "action": "webLink",
-                                "label": "경제지표 바로가기",
-                                "webLinkUrl": "https://moneycalc.wikitreee.com/2026/03/12/%ec%8b%a4%ec%8b%9c%ea%b0%84-%ea%b8%88-%ec%9d%80-%ec%9b%90%ec%9c%a0-%eb%8b%ac%eb%9f%ac-%ec%8b%9c%ec%84%b8-%ea%b8%80%eb%a1%9c%eb%b2%8c-%ea%b2%bd%ec%a0%9c%ec%a7%80%ec%88%98-%eb%8c%80%ec%8b%9c%eb%b3%b4/"
+                                "label": "시장 풀분석 바로가기",
+                                "webLinkUrl": post_url
                             }
                         ]
                     }
