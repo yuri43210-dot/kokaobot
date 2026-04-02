@@ -3,9 +3,9 @@ name: Update Market Summary
 on:
   workflow_dispatch:
   schedule:
-    - cron: '40 23 * * 1-5'   # KST 08:40
-    - cron: '30 3 * * 1-5'    # KST 12:30
-    - cron: '40 6 * * 1-5'    # KST 15:40
+    - cron: '40 23 * * 1-5'
+    - cron: '30 3 * * 1-5'
+    - cron: '40 6 * * 1-5'
 
 jobs:
   update-summary:
