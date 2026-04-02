@@ -14,7 +14,6 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
-# 섹터별 대표 종목
 SECTOR_STOCKS = {
     "반도체": ["005930", "000660", "042700", "000990", "240810"],
     "2차전지": ["373220", "247540", "003670", "066970", "003490"],
@@ -150,10 +149,70 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
 
     sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
 
-    strong = [name for name, score in sorted_sectors[:2]]
-    weak = [name for name, score in sorted_sectors[-2:]]
+    strong = [name for name, _ in sorted_sectors[:2]]
+    weak = [name for name, _ in sorted_sectors[-2:]]
 
     return strong, weak, sector_scores
+
+
+def get_market_temperature(kospi_pct: float, kosdaq_pct: float) -> str:
+    avg = (kospi_pct + kosdaq_pct) / 2
+
+    if avg >= 1.0:
+        return "🟢 강세"
+    if 0.2 <= avg < 1.0:
+        return "🟡 강보합"
+    if -0.2 < avg < 0.2:
+        return "⚪ 중립"
+    if -1.0 < avg <= -0.2:
+        return "🟠 약세"
+    return "🔴 급락/리스크"
+
+
+def get_flow_summary(kospi_pct: float, kosdaq_pct: float, fx: dict | None) -> str:
+    # 실제 외국인/기관 데이터 API 붙이기 전까지는 시장흐름 기반 기본형
+    if kospi_pct < 0 and kosdaq_pct < 0:
+        if fx and fx["direction"] == "상승":
+            return "외국인 이탈 가능성, 방어적 흐름"
+        return "전반적 매도 우위, 관망 심리"
+    if kospi_pct > 0 and kosdaq_pct > 0:
+        return "위험선호 회복, 매수 우위 흐름"
+    return "혼조 흐름, 수급 방향성 확인 필요"
+
+
+def build_trade_points(
+    strong_sectors: list[str],
+    weak_sectors: list[str],
+    sector_scores: dict,
+    kospi: dict,
+    kosdaq: dict,
+) -> list[str]:
+    points = []
+
+    if strong_sectors:
+        top = strong_sectors[0]
+        top_score = sector_scores.get(top)
+        if top_score is not None:
+            points.append(f"{top}: 상대 강도 {top_score}%로 방어 또는 주도 여부 체크")
+        else:
+            points.append(f"{top}: 상대 강도 유지 여부 체크")
+
+    if weak_sectors:
+        weak = weak_sectors[0]
+        weak_score = sector_scores.get(weak)
+        if weak_score is not None:
+            points.append(f"{weak}: {weak_score}% 수준으로 약세, 추가 하락 리스크 확인")
+        else:
+            points.append(f"{weak}: 약세 지속 여부 확인")
+
+    if kospi["change_pct"] <= -2 or kosdaq["change_pct"] <= -2:
+        points.append("지수 급락 구간: 단기 반등보다 리스크 관리 우선")
+    elif kospi["change_pct"] >= 1 or kosdaq["change_pct"] >= 1:
+        points.append("강세 구간: 추격 매수보다 주도 섹터 압축 확인")
+    else:
+        points.append("혼조 구간: 뚜렷한 주도주와 거래대금 집중 종목 확인")
+
+    return points[:3]
 
 
 def build_raw_summary() -> dict:
@@ -165,6 +224,9 @@ def build_raw_summary() -> dict:
     fx = get_fx_change()
 
     strong_sectors, weak_sectors, sector_scores = infer_sectors_from_representatives()
+    market_temp = get_market_temperature(kospi["change_pct"], kosdaq["change_pct"])
+    flow_summary = get_flow_summary(kospi["change_pct"], kosdaq["change_pct"], fx)
+    trade_points = build_trade_points(strong_sectors, weak_sectors, sector_scores, kospi, kosdaq)
 
     if stage == "pre_open":
         title = "오늘의 개장 전 체크"
@@ -199,20 +261,31 @@ def build_raw_summary() -> dict:
         else:
             weak_lines.append(f"- {sector}")
 
+    point_lines = [f"- {p}" for p in trade_points]
+
     full_text = f"""🌳 [{title}]
 
 📌 오늘의 한줄
 {one_line}
 
+🌡 시장 온도
+- {market_temp}
+
 📊 지수 흐름
 - 코스피: {kospi['close']} ({kospi['change_pct']}%)
 - 코스닥: {kosdaq['close']} ({kosdaq['change_pct']}%){fx_line}
+
+💰 수급 흐름
+- {flow_summary}
 
 🔥 강한 섹터
 {chr(10).join(strong_lines)}
 
 🍂 약한 섹터
 {chr(10).join(weak_lines)}
+
+🎯 오늘의 매매 포인트
+{chr(10).join(point_lines)}
 
 📅 {check_label}
 - 미국 증시 흐름
@@ -236,6 +309,9 @@ def build_raw_summary() -> dict:
             "title": title,
             "stage": stage,
             "one_line": one_line,
+            "market_temperature": market_temp,
+            "flow_summary": flow_summary,
+            "trade_points": trade_points,
             "kospi": kospi,
             "kosdaq": kosdaq,
             "fx": fx,
@@ -264,16 +340,19 @@ def polish_with_gpt(raw: dict) -> str:
 - 초보자도 이해 가능
 - 과장 금지
 - 투자 권유 금지
-- 8~12줄 정도
+- 10~14줄 정도
 - 형식 유지:
   🌳 [제목]
   📌 오늘의 한줄
+  🌡 시장 온도
   📊 지수 흐름
+  💰 수급 흐름
   🔥 강한 섹터
   🍂 약한 섹터
+  🎯 오늘의 매매 포인트
   📅 체크포인트
-- strong_sectors와 weak_sectors는 입력 데이터 기준으로 반영
-- 문장은 자연스럽게 다듬되 숫자는 유지
+- 숫자는 유지
+- strong/weak sector는 입력 데이터 기준으로 반영
 
 입력 데이터:
 {json.dumps(raw["structured"], ensure_ascii=False)}
