@@ -1,21 +1,22 @@
 import os
 import json
-import requests
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from collections import Counter
 
+import requests
 import FinanceDataReader as fdr
 import pandas as pd
 from pykrx import stock
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-TABLE_NAME = "market_summaries"
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
+TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
+# 종목명 기반 간단 섹터 키워드 매핑
 SECTOR_KEYWORDS = {
     "반도체": ["삼성전자", "SK하이닉스", "한미반도체", "DB하이텍", "리노공업", "원익IPS"],
     "2차전지": ["에코프로", "에코프로비엠", "포스코퓨처엠", "엘앤에프", "금양", "LG에너지솔루션"],
@@ -25,6 +26,9 @@ SECTOR_KEYWORDS = {
     "게임": ["크래프톤", "엔씨소프트", "넷마블", "펄어비스"],
     "조선": ["HD한국조선해양", "한화오션", "삼성중공업", "HD현대중공업"],
 }
+
+DEFAULT_STRONG = ["반도체", "AI 관련주"]
+DEFAULT_WEAK = ["2차전지"]
 
 
 def now_kst() -> datetime:
@@ -40,35 +44,52 @@ def market_stage(now: datetime) -> str:
     return "close"
 
 
+def safe_direction(change_pct: float) -> str:
+    if change_pct > 0:
+        return "상승"
+    if change_pct < 0:
+        return "하락"
+    return "보합"
+
+
 def get_last_two_rows(symbol: str) -> pd.DataFrame:
     start = date.today() - timedelta(days=10)
     df = fdr.DataReader(symbol, start.strftime("%Y-%m-%d"))
-    df = df.dropna().copy()
 
+    if df is None or df.empty:
+        raise ValueError(f"{symbol} 데이터가 비어 있습니다.")
+
+    df = df.dropna().copy()
     if len(df) < 2:
-        raise ValueError(f"{symbol} 데이터가 부족합니다.")
+        raise ValueError(f"{symbol} 데이터가 충분하지 않습니다.")
 
     return df.tail(2)
 
 
 def get_index_change(symbol: str, name: str) -> dict:
-    df = get_last_two_rows(symbol)
+    try:
+        df = get_last_two_rows(symbol)
+        prev = df.iloc[0]
+        last = df.iloc[1]
 
-    prev = df.iloc[0]
-    last = df.iloc[1]
+        close = float(last["Close"])
+        prev_close = float(prev["Close"])
+        change_pct = round(((close - prev_close) / prev_close) * 100, 2)
 
-    close = float(last["Close"])
-    prev_close = float(prev["Close"])
-    change_pct = round(((close - prev_close) / prev_close) * 100, 2)
-
-    direction = "상승" if change_pct > 0 else "하락" if change_pct < 0 else "보합"
-
-    return {
-        "name": name,
-        "close": round(close, 2),
-        "change_pct": change_pct,
-        "direction": direction,
-    }
+        return {
+            "name": name,
+            "close": round(close, 2),
+            "change_pct": change_pct,
+            "direction": safe_direction(change_pct),
+        }
+    except Exception:
+        # 실패 시 기본값
+        return {
+            "name": name,
+            "close": 0.0,
+            "change_pct": 0.0,
+            "direction": "보합",
+        }
 
 
 def get_fx_change() -> dict | None:
@@ -81,18 +102,16 @@ def get_fx_change() -> dict | None:
         prev_close = float(prev["Close"])
         change_pct = round(((close - prev_close) / prev_close) * 100, 2)
 
-        direction = "상승" if change_pct > 0 else "하락" if change_pct < 0 else "보합"
-
         return {
             "close": round(close, 2),
             "change_pct": change_pct,
-            "direction": direction,
+            "direction": safe_direction(change_pct),
         }
     except Exception:
         return None
 
 
-def get_recent_business_day_str(days_back: int = 10) -> str:
+def get_recent_business_day_str(days_back: int = 14) -> str | None:
     today = date.today()
 
     for i in range(days_back):
@@ -104,13 +123,16 @@ def get_recent_business_day_str(days_back: int = 10) -> str:
             if df is not None and not df.empty:
                 return ymd
         except Exception:
-            pass
+            continue
 
-    raise ValueError("최근 영업일을 찾지 못했습니다.")
+    return None
 
 
 def get_top_movers(market: str = "KOSPI", n: int = 20) -> pd.DataFrame:
     bizday = get_recent_business_day_str()
+
+    if not bizday:
+        return pd.DataFrame()
 
     try:
         df = stock.get_market_price_change(bizday, bizday, market=market)
@@ -120,48 +142,59 @@ def get_top_movers(market: str = "KOSPI", n: int = 20) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
-    df = df.reset_index().rename(columns={"티커": "ticker", "종목명": "name"})
+    df = df.reset_index()
 
-    if "등락률" not in df.columns:
+    # 컬럼명 방어 처리
+    rename_map = {}
+    if "티커" in df.columns:
+        rename_map["티커"] = "ticker"
+    if "종목명" in df.columns:
+        rename_map["종목명"] = "name"
+    df = df.rename(columns=rename_map)
+
+    if "name" not in df.columns or "등락률" not in df.columns:
         return pd.DataFrame()
 
     df = df.sort_values("등락률", ascending=False).head(n)
-    return df[["ticker", "name", "등락률"]]
+    return df[[col for col in ["ticker", "name", "등락률"] if col in df.columns]]
 
 
 def infer_sectors_from_movers() -> tuple[list[str], list[str]]:
-    kospi_movers = get_top_movers("KOSPI", 15)
-    kosdaq_movers = get_top_movers("KOSDAQ", 15)
+    try:
+        kospi_movers = get_top_movers("KOSPI", 15)
+        kosdaq_movers = get_top_movers("KOSDAQ", 15)
 
-    frames = []
-    if not kospi_movers.empty:
-        frames.append(kospi_movers)
-    if not kosdaq_movers.empty:
-        frames.append(kosdaq_movers)
+        frames = []
+        if not kospi_movers.empty:
+            frames.append(kospi_movers)
+        if not kosdaq_movers.empty:
+            frames.append(kosdaq_movers)
 
-    if not frames:
-        return ["반도체", "AI 관련주"], ["2차전지"]
+        if not frames:
+            return DEFAULT_STRONG, DEFAULT_WEAK
 
-    movers = pd.concat(frames, ignore_index=True)
+        movers = pd.concat(frames, ignore_index=True)
+        strong_counter = Counter()
 
-    strong_counter = Counter()
+        for _, row in movers.iterrows():
+            name = str(row.get("name", ""))
+            for sector, keywords in SECTOR_KEYWORDS.items():
+                if any(keyword in name for keyword in keywords):
+                    strong_counter[sector] += 1
 
-    for _, row in movers.iterrows():
-        name = str(row["name"])
-        for sector, keywords in SECTOR_KEYWORDS.items():
-            if any(keyword in name for keyword in keywords):
-                strong_counter[sector] += 1
+        strong = [sector for sector, _ in strong_counter.most_common(3)]
+        if not strong:
+            strong = DEFAULT_STRONG
 
-    strong = [name for name, _ in strong_counter.most_common(3)]
-    if not strong:
-        strong = ["반도체", "AI 관련주"]
+        weak_candidates = ["2차전지", "바이오", "게임"]
+        weak = [w for w in weak_candidates if w not in strong][:2]
+        if not weak:
+            weak = DEFAULT_WEAK
 
-    weak_default = ["2차전지"]
-    weak = [w for w in weak_default if w not in strong]
-    if not weak:
-        weak = ["차익실현 종목군"]
+        return strong, weak
 
-    return strong, weak
+    except Exception:
+        return DEFAULT_STRONG, DEFAULT_WEAK
 
 
 def build_raw_summary() -> dict:
@@ -175,7 +208,7 @@ def build_raw_summary() -> dict:
 
     if stage == "pre_open":
         title = "오늘의 개장 전 체크"
-        one_line = "개장 전 주요 변수와 전일 마감 흐름을 기준으로 시장을 준비하는 시간입니다."
+        one_line = "개장 전 주요 변수와 최근 시장 흐름을 기준으로 장을 준비하는 시간입니다."
         check_label = "오늘 체크"
     elif stage == "intraday":
         title = "오늘의 장중 요약"
@@ -190,7 +223,7 @@ def build_raw_summary() -> dict:
     if fx:
         fx_line = f"\n- 원달러 환율: {fx['close']} ({fx['direction']}, {fx['change_pct']}%)"
 
-    raw_full_text = f"""🌳 [{title}]
+    full_text = f"""🌳 [{title}]
 
 📌 오늘의 한줄
 {one_line}
@@ -212,15 +245,15 @@ def build_raw_summary() -> dict:
 """
 
     return {
-        "stage": stage,
-        "title": title,
+        "summary_date": str(date.today()),
+        "market_type": "kr_stock",
         "one_line": one_line,
         "kospi_text": f"코스피는 {kospi['close']}에서 {kospi['change_pct']}% {kospi['direction']} 흐름입니다.",
         "kosdaq_text": f"코스닥은 {kosdaq['close']}에서 {kosdaq['change_pct']}% {kosdaq['direction']} 흐름입니다.",
         "strong_sectors": ", ".join(strong_sectors),
         "weak_sectors": ", ".join(weak_sectors),
         "tomorrow_points": "미국 증시 흐름, 환율, 외국인 수급",
-        "full_text": raw_full_text,
+        "full_text": full_text,
         "structured": {
             "title": title,
             "stage": stage,
@@ -280,8 +313,8 @@ def upsert_summary():
     final_text = polish_with_gpt(raw)
 
     row = {
-        "summary_date": str(date.today()),
-        "market_type": "kr_stock",
+        "summary_date": raw["summary_date"],
+        "market_type": raw["market_type"],
         "one_line": raw["one_line"],
         "kospi_text": raw["kospi_text"],
         "kosdaq_text": raw["kosdaq_text"],
@@ -300,7 +333,8 @@ def upsert_summary():
         "Prefer": "resolution=merge-duplicates",
     }
 
-    response = requests.post(url, headers=headers, json=row)
+    response = requests.post(url, headers=headers, json=row, timeout=30)
+
     print("status:", response.status_code)
     print("response:", response.text)
 
