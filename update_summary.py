@@ -232,10 +232,10 @@ def build_raw_summary() -> dict:
 - 코스피: {kospi['close']} ({kospi['change_pct']}%)
 - 코스닥: {kosdaq['close']} ({kosdaq['change_pct']}%){fx_line}
 
-🔥 강한 가지
+🔥 강한 섹터
 - {' / '.join(strong_sectors)}
 
-🍂 약한 가지
+🍂 약한 섹터
 - {' / '.join(weak_sectors)}
 
 📅 {check_label}
