@@ -1,9 +1,9 @@
+import os
 import requests
 from datetime import date
 
-SUPABASE_URL = "https://wqqfqinhiytntextpjey.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndxcWZxaW5oaXl0bnRleHRwamV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMzIyNjksImV4cCI6MjA5MDYwODI2OX0.Cm8FtLiuzbv3sU0_TarpK_mowHqAbUB3xZFW0d2foNQ"
-
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 TABLE_NAME = "market_summaries"
 
 
