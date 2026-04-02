@@ -3,7 +3,9 @@ name: Update Market Summary
 on:
   workflow_dispatch:
   schedule:
-    - cron: '40 6 * * 1-5'
+    - cron: '40 23 * * 1-5'   # KST 08:40
+    - cron: '30 3 * * 1-5'    # KST 12:30
+    - cron: '40 6 * * 1-5'    # KST 15:40
 
 jobs:
   update-summary:
@@ -25,4 +27,5 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python update_summary.py
