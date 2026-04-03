@@ -19,10 +19,24 @@ WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"].strip()
 TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
-# 워드프레스 카테고리 ID
 WP_CATEGORY_ID = 12
 
-# 섹터별 대표 종목
+# 중간 광고 코드
+ADSENSE_MIDDLE_CODE = """
+<div style="margin:28px 0; text-align:center;">
+  <!-- AdSense Middle -->
+  <ins class="adsbygoogle"
+       style="display:block"
+       data-ad-client="ca-pub-XXXXXX"
+       data-ad-slot="XXXXXX"
+       data-ad-format="auto"
+       data-full-width-responsive="true"></ins>
+  <script>
+       (adsbygoogle = window.adsbygoogle || []).push({});
+  </script>
+</div>
+"""
+
 SECTOR_STOCKS = {
     "반도체": ["005930", "000660", "042700", "000990", "240810"],
     "2차전지": ["373220", "247540", "003670", "066970", "003490"],
@@ -156,7 +170,6 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
         return DEFAULT_STRONG, DEFAULT_WEAK, {}
 
     sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
-
     strong = [name for name, _ in sorted_sectors[:2]]
     weak = [name for name, _ in sorted_sectors[-2:]]
 
@@ -206,14 +219,14 @@ def build_trade_points(
         weak = weak_sectors[0]
         weak_score = sector_scores.get(weak)
         if weak_score is not None:
-            points.append(f"{weak}는 {weak_score}% 수준의 약세를 보였으므로 추가 하락 여부를 주시해야 합니다.")
+            points.append(f"{weak}는 {weak_score}% 수준의 약세를 보여 추가 하락 여부를 주시해야 합니다.")
 
     if kospi["change_pct"] <= -2 or kosdaq["change_pct"] <= -2:
         points.append("지수 급락 구간에서는 단기 반등보다 리스크 관리가 우선입니다.")
     elif kospi["change_pct"] >= 1 or kosdaq["change_pct"] >= 1:
         points.append("강세 구간에서는 추격 매수보다 주도 섹터 압축 여부를 살피는 것이 좋습니다.")
     else:
-        points.append("혼조 구간에서는 거래대금이 몰리는 종목과 테마를 우선적으로 체크해야 합니다.")
+        points.append("혼조 구간에서는 거래대금이 몰리는 종목과 테마를 체크해야 합니다.")
 
     return points[:3]
 
@@ -252,8 +265,8 @@ def generate_news_items(raw: dict) -> list[str]:
             pass
 
     return [
-        "코스피·코스닥 동반 하락… 투자심리 위축에 방어주 선호",
-        "환율 상승 속 반도체 약세… 내일 외국인 수급이 변수",
+        "코스피·코스닥 동반 상승… 위험선호 심리 회복",
+        "환율 하락 속 반도체·조선 강세… 주도주 압축 흐름",
     ]
 
 
@@ -326,18 +339,12 @@ def build_chat_text(raw: dict) -> str:
     strong_lines = []
     for sector in raw["strong_sectors"]:
         score = raw["sector_scores"].get(sector)
-        if score is not None:
-            strong_lines.append(f"- {sector} ({score}%)")
-        else:
-            strong_lines.append(f"- {sector}")
+        strong_lines.append(f"- {sector} ({score}%)" if score is not None else f"- {sector}")
 
     weak_lines = []
     for sector in raw["weak_sectors"]:
         score = raw["sector_scores"].get(sector)
-        if score is not None:
-            weak_lines.append(f"- {sector} ({score}%)")
-        else:
-            weak_lines.append(f"- {sector}")
+        weak_lines.append(f"- {sector} ({score}%)" if score is not None else f"- {sector}")
 
     point_lines = [f"- {p}" for p in raw["trade_points"]]
 
@@ -374,6 +381,14 @@ def build_chat_text(raw: dict) -> str:
 """
 
 
+def insert_middle_adsense(content: str) -> str:
+    # h2 기준으로 중간 광고 1회 삽입
+    parts = content.split("<h2>")
+    if len(parts) >= 5:
+        return "<h2>".join(parts[:4]) + ADSENSE_MIDDLE_CODE + "<h2>" + "<h2>".join(parts[4:])
+    return content + ADSENSE_MIDDLE_CODE
+
+
 def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     prompt = f"""
 당신은 한국 주식시장 전문 애널리스트이자 블로그 에디터입니다.
@@ -384,33 +399,23 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 - 한국어
 - 너무 딱딱하지 않게
 - 초보자도 이해할 수 있게
-- 광고형 과장 금지
 - 전문가처럼 이유와 흐름을 설명
 - HTML 형식으로 작성
 - 제목(title), 요약(excerpt), 본문(content)을 JSON 형식으로 출력
-- 본문 구조는 아래 순서를 따르세요:
-
-1. 오늘 시장 한줄 요약
-2. 시장 전체 흐름 분석
-3. 지수 상세 분석
-4. 강한 섹터와 그 이유
-5. 약한 섹터와 그 이유
-6. 글로벌 경제 이슈
-7. 관련 뉴스 2개
-8. 내일 체크포인트 (구체적)
-9. 투자 전략
-
-추가 조건:
-- 강한/약한 섹터는 입력 데이터 기준 사용
-- 뉴스 2개는 입력 데이터의 news_items를 본문에 포함
-- 내일 체크포인트는 단순 나열 말고 구체적으로 설명
-- SEO를 고려해 자연스럽게 "코스피", "코스닥", "환율", "주식시장", "장마감" 키워드를 녹여라
-- 출력은 반드시 JSON:
-{{
-  "title": "...",
-  "excerpt": "...",
-  "content": "..."
-}}
+- 본문 구조:
+  1. 오늘 시장 한줄 요약
+  2. 시장 전체 흐름 분석
+  3. 지수 상세 분석
+  4. 강한 섹터와 그 이유
+  5. 약한 섹터와 그 이유
+  6. 글로벌 경제 이슈
+  7. 관련 뉴스 2개
+  8. 내일 체크포인트
+  9. 투자 전략
+- strong/weak sector는 입력 데이터 기준 사용
+- news_items는 본문에 포함
+- 숫자는 유지
+- 출력은 반드시 JSON
 
 입력 데이터:
 {json.dumps(raw, ensure_ascii=False)}
@@ -426,11 +431,12 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
             )
             text = response.output_text.strip()
             parsed = json.loads(text)
+
             title = parsed["title"]
             excerpt = parsed["excerpt"]
             content = parsed["content"]
             slug = f"market-close-{raw['summary_date']}"
-            return title, excerpt, content, slug
+            return title, excerpt, insert_middle_adsense(content), slug
         except Exception:
             pass
 
@@ -449,7 +455,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     points_html = "".join(f"<li>{p}</li>" for p in raw["trade_points"])
     news_html = "".join(f"<li>{item}</li>" for item in raw["news_items"])
 
-    title = f"{raw['summary_date']} 장마감 주식시장 분석 | 코스피·코스닥·환율 흐름"
+    title = f"{raw['summary_date']} 장중 주식시장 분석 | 코스피·코스닥·환율 흐름"
     excerpt = raw["one_line"]
 
     content = f"""
@@ -471,28 +477,28 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 
 <h2>🔥 강한 섹터와 이유</h2>
 <ul>{strong_html}</ul>
-<p>상대적으로 덜 흔들리거나 방어적인 흐름을 보인 섹터들입니다. 단기 반등인지 추세 전환인지는 다음 거래일 수급 확인이 필요합니다.</p>
+<p>상대적으로 강세를 보인 섹터들로, 수급이 몰리거나 주도 테마로 해석될 가능성이 있습니다.</p>
 
 <h2>🍂 약한 섹터와 이유</h2>
 <ul>{weak_html}</ul>
-<p>낙폭이 큰 섹터는 외부 변수와 투자심리 위축의 영향을 받았을 가능성이 높습니다. 추가 하락 여부를 확인해야 합니다.</p>
+<p>상대적으로 약세를 보인 섹터들로, 차익실현 또는 투자심리 위축 영향을 받았을 가능성이 있습니다.</p>
 
 <h2>🌍 글로벌 경제 이슈</h2>
-<p>미국 증시 흐름, 달러 강세 여부, 금리 기대 변화는 국내 주식시장과 환율에 직접적인 영향을 줄 수 있습니다. 특히 기술주 약세가 이어질 경우 반도체와 성장주의 변동성이 커질 수 있습니다.</p>
+<p>미국 증시 흐름, 달러 움직임, 금리 기대 변화는 국내 주식시장에 직접적인 영향을 줄 수 있습니다. 특히 환율 방향은 외국인 수급과 연결될 가능성이 높습니다.</p>
 
 <h2>📰 관련 뉴스</h2>
 <ul>{news_html}</ul>
 
-<h2>📌 내일 체크포인트</h2>
-<p>내일은 미국 증시 흐름과 원달러 환율, 외국인 수급 전환 여부를 함께 확인해야 합니다. 특히 약세가 컸던 섹터가 추가로 밀리는지, 아니면 낙폭 과대 반등이 나오는지가 중요합니다.</p>
+<h2>📌 {raw["check_label"]}</h2>
+<p>미국 증시 방향, 원달러 환율, 외국인 수급 지속 여부를 함께 확인해야 합니다. 특히 강한 섹터가 계속 주도권을 유지하는지 여부가 중요합니다.</p>
 
 <h2>💡 투자 전략</h2>
 <ul>{points_html}</ul>
-<p>지수 급락 구간에서는 공격적인 진입보다 리스크 관리가 우선이며, 상대 강도가 유지되는 섹터 중심으로 압축해서 보는 전략이 유효합니다.</p>
+<p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 전략이 유효합니다.</p>
 """
 
     slug = f"market-close-{raw['summary_date']}"
-    return title, excerpt, content, slug
+    return title, excerpt, insert_middle_adsense(content), slug
 
 
 def publish_to_wordpress(title: str, excerpt: str, content: str, slug: str) -> tuple[str, str]:
