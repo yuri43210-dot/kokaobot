@@ -40,11 +40,11 @@ async def market_summary():
                 {
                     "basicCard": {
                         "title": "📊 오늘 시장 풀분석 보기",
-                        "description": "장마감 해설과 내일 체크포인트를 블로그에서 확인하세요.",
+                        "description": "방금 발행된 최신 시장 분석 글로 이동합니다.",
                         "buttons": [
                             {
                                 "action": "webLink",
-                                "label": "시장 풀분석 바로가기",
+                                "label": "최신 분석글 바로가기",
                                 "webLinkUrl": post_url
                             }
                         ]
