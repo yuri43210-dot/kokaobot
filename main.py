@@ -6,7 +6,7 @@ app = FastAPI()
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
-DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://yourblog.com").strip()
+DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://moneycalc.wikitreee.com").strip()
 
 @app.get("/")
 async def root():
