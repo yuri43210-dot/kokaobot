@@ -19,24 +19,13 @@ WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"].strip()
 TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
+# 워드프레스 카테고리 ID
 WP_CATEGORY_ID = 12
 
-# 중간 광고 코드
-ADSENSE_MIDDLE_CODE = """
-<div style="margin:28px 0; text-align:center;">
-  <!-- AdSense Middle -->
-  <ins class="adsbygoogle"
-       style="display:block"
-       data-ad-client="ca-pub-4213850053743871"
-       data-ad-slot="3425679039"
-       data-ad-format="auto"
-       data-full-width-responsive="true"></ins>
-  <script>
-       (adsbygoogle = window.adsbygoogle || []).push({});
-  </script>
-</div>
-"""
+# Ad Inserter 숏코드
+ADINSERTER_SHORTCODE = '[adinserter block="1"]'
 
+# 섹터별 대표 종목
 SECTOR_STOCKS = {
     "반도체": ["005930", "000660", "042700", "000990", "240810"],
     "2차전지": ["373220", "247540", "003670", "066970", "003490"],
@@ -158,6 +147,7 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
 
     for sector, tickers in SECTOR_STOCKS.items():
         changes = []
+
         for ticker in tickers:
             pct = get_stock_change_pct(ticker)
             if pct is not None:
@@ -235,7 +225,7 @@ def generate_news_items(raw: dict) -> list[str]:
     prompt = f"""
 당신은 한국 주식시장 뉴스 에디터입니다.
 
-아래 시장 데이터 기반으로, 오늘 장마감과 관련된 뉴스 제목 2개를 작성하세요.
+아래 시장 데이터 기반으로, 오늘 장마감 또는 장중 흐름과 관련된 뉴스 제목 2개를 작성하세요.
 
 조건:
 - 한국어
@@ -265,8 +255,8 @@ def generate_news_items(raw: dict) -> list[str]:
             pass
 
     return [
-        "코스피·코스닥 동반 상승… 위험선호 심리 회복",
-        "환율 하락 속 반도체·조선 강세… 주도주 압축 흐름",
+        "코스피·코스닥 흐름 엇갈려… 환율과 수급이 핵심 변수",
+        "강한 섹터 중심 매기 집중… 약한 업종은 추가 변동성 주의",
     ]
 
 
@@ -339,12 +329,18 @@ def build_chat_text(raw: dict) -> str:
     strong_lines = []
     for sector in raw["strong_sectors"]:
         score = raw["sector_scores"].get(sector)
-        strong_lines.append(f"- {sector} ({score}%)" if score is not None else f"- {sector}")
+        if score is not None:
+            strong_lines.append(f"- {sector} ({score}%)")
+        else:
+            strong_lines.append(f"- {sector}")
 
     weak_lines = []
     for sector in raw["weak_sectors"]:
         score = raw["sector_scores"].get(sector)
-        weak_lines.append(f"- {sector} ({score}%)" if score is not None else f"- {sector}")
+        if score is not None:
+            weak_lines.append(f"- {sector} ({score}%)")
+        else:
+            weak_lines.append(f"- {sector}")
 
     point_lines = [f"- {p}" for p in raw["trade_points"]]
 
@@ -381,19 +377,19 @@ def build_chat_text(raw: dict) -> str:
 """
 
 
-def insert_middle_adsense(content: str) -> str:
-    # h2 기준으로 중간 광고 1회 삽입
+def insert_shortcode_ad(content: str) -> str:
+    # 4번째 h2 앞에 광고 1회 삽입
     parts = content.split("<h2>")
     if len(parts) >= 5:
-        return "<h2>".join(parts[:4]) + ADSENSE_MIDDLE_CODE + "<h2>" + "<h2>".join(parts[4:])
-    return content + ADSENSE_MIDDLE_CODE
+        return "<h2>".join(parts[:4]) + ADINSERTER_SHORTCODE + "<h2>" + "<h2>".join(parts[4:])
+    return content + ADINSERTER_SHORTCODE
 
 
 def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     prompt = f"""
 당신은 한국 주식시장 전문 애널리스트이자 블로그 에디터입니다.
 
-아래 데이터를 바탕으로 WordPress용 장마감 해설 글을 작성하세요.
+아래 데이터를 바탕으로 WordPress용 시장 해설 글을 작성하세요.
 
 조건:
 - 한국어
@@ -410,7 +406,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
   5. 약한 섹터와 그 이유
   6. 글로벌 경제 이슈
   7. 관련 뉴스 2개
-  8. 내일 체크포인트
+  8. 내일/남은 장 체크포인트
   9. 투자 전략
 - strong/weak sector는 입력 데이터 기준 사용
 - news_items는 본문에 포함
@@ -435,8 +431,8 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
             title = parsed["title"]
             excerpt = parsed["excerpt"]
             content = parsed["content"]
-            slug = f"market-close-{raw['summary_date']}"
-            return title, excerpt, insert_middle_adsense(content), slug
+            slug = f"market-{raw['summary_date']}-{raw['title'].replace(' ', '-')}"
+            return title, excerpt, insert_shortcode_ad(content), slug
         except Exception:
             pass
 
@@ -455,7 +451,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     points_html = "".join(f"<li>{p}</li>" for p in raw["trade_points"])
     news_html = "".join(f"<li>{item}</li>" for item in raw["news_items"])
 
-    title = f"{raw['summary_date']} 장중 주식시장 분석 | 코스피·코스닥·환율 흐름"
+    title = f"{raw['summary_date']} {raw['title']} | 코스피·코스닥·환율 흐름"
     excerpt = raw["one_line"]
 
     content = f"""
@@ -490,15 +486,15 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 <ul>{news_html}</ul>
 
 <h2>📌 {raw["check_label"]}</h2>
-<p>미국 증시 방향, 원달러 환율, 외국인 수급 지속 여부를 함께 확인해야 합니다. 특히 강한 섹터가 계속 주도권을 유지하는지 여부가 중요합니다.</p>
+<p>미국 증시 방향, 원달러 환율, 외국인 수급 지속 여부를 함께 확인해야 합니다. 특히 강한 섹터가 계속 주도권을 유지하는지가 중요합니다.</p>
 
 <h2>💡 투자 전략</h2>
 <ul>{points_html}</ul>
 <p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 전략이 유효합니다.</p>
 """
 
-    slug = f"market-close-{raw['summary_date']}"
-    return title, excerpt, insert_middle_adsense(content), slug
+    slug = f"market-{raw['summary_date']}-{raw['title'].replace(' ', '-')}"
+    return title, excerpt, insert_shortcode_ad(content), slug
 
 
 def publish_to_wordpress(title: str, excerpt: str, content: str, slug: str) -> tuple[str, str]:
