@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+gunicorn
 requests
 finance-datareader
 pandas
