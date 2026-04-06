@@ -12,6 +12,34 @@ DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://moneycalc.wikitre
 TABLE_NAME = "market_summaries"
 
 
+def get_market_ui_meta(market_type: str) -> dict:
+    mapping = {
+        "kr_stock_preopen": {
+            "header_title": "📌 [오늘의 개장 전 체크]",
+            "button_label": "어제 장마감 분석 보기",
+            "fallback_empty": "개장 전 요약 데이터가 아직 없습니다.",
+        },
+        "kr_stock_morning": {
+            "header_title": "📌 [오늘의 오전 시황]",
+            "button_label": "최근 장마감 분석 보기",
+            "fallback_empty": "오전 시황 데이터가 아직 없습니다.",
+        },
+        "kr_stock_close": {
+            "header_title": "📌 [오늘의 장마감 요약]",
+            "button_label": "오늘 장마감 분석 보기",
+            "fallback_empty": "장마감 요약 데이터가 아직 없습니다.",
+        },
+    }
+    return mapping.get(
+        market_type,
+        {
+            "header_title": "📌 [오늘의 시장 체크]",
+            "button_label": "최신 분석글 바로가기",
+            "fallback_empty": "시장 요약 데이터가 아직 없습니다.",
+        },
+    )
+
+
 def build_summary_text(latest: dict) -> str:
     full_text = (latest.get("full_text") or "").strip()
     if full_text:
@@ -23,16 +51,10 @@ def build_summary_text(latest: dict) -> str:
     strong_sectors = (latest.get("strong_sectors") or "").strip()
     weak_sectors = (latest.get("weak_sectors") or "").strip()
     tomorrow_points = (latest.get("tomorrow_points") or "").strip()
-
     market_type = (latest.get("market_type") or "").strip()
-    title_map = {
-        "kr_stock_preopen": "📌 [오늘의 개장 전 체크]",
-        "kr_stock_morning": "📌 [오늘의 오전 시황]",
-        "kr_stock_close": "📌 [오늘의 장마감 요약]",
-    }
-    title = title_map.get(market_type, "📌 [오늘의 시장 체크]")
 
-    parts = [title]
+    ui_meta = get_market_ui_meta(market_type)
+    parts = [ui_meta["header_title"]]
 
     if one_line:
         parts.append(f"\n☀ 오늘의 한줄\n{one_line}")
@@ -62,7 +84,12 @@ def build_summary_text(latest: dict) -> str:
             parts.append("\n".join(section))
 
     if tomorrow_points:
-        parts.append(f"\n🎯 체크 포인트\n{tomorrow_points}")
+        point_lines = [x.strip() for x in tomorrow_points.split("/") if x.strip()]
+        if point_lines:
+            section = ["\n🎯 체크 포인트"]
+            for item in point_lines:
+                section.append(f"- {item}")
+            parts.append("\n".join(section))
 
     result = "\n".join(parts).strip()
     return result or "오늘 시장 요약 데이터가 비어 있습니다."
@@ -73,7 +100,7 @@ def fetch_latest_summary(market_type: str) -> dict | None:
         f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
         f"?select=*"
         f"&market_type=eq.{market_type}"
-        f"&order=summary_date.desc,created_at.desc"
+        f"&order=summary_date.desc"
         f"&limit=1"
     )
 
@@ -101,7 +128,51 @@ def fetch_latest_summary(market_type: str) -> dict | None:
     return data[0]
 
 
-def kakao_response_from_row(latest: dict | None, empty_text: str) -> JSONResponse:
+def build_outputs_from_row(latest: dict) -> list:
+    text = build_summary_text(latest)
+    market_type = (latest.get("market_type") or "").strip()
+    ui_meta = get_market_ui_meta(market_type)
+
+    if len(text) > 950:
+        text = text[:950].rstrip() + "\n\n👉 아래 버튼에서 전체 분석을 확인하세요."
+
+    outputs = [
+        {
+            "simpleText": {
+                "text": text
+            }
+        }
+    ]
+
+    post_url = (latest.get("post_url") or "").strip()
+    post_title = (latest.get("post_title") or "").strip()
+
+    if not post_url:
+        return outputs
+
+    card_title = post_title or ui_meta["header_title"].replace("📌 ", "")
+    button_label = ui_meta["button_label"]
+
+    outputs.append({
+        "basicCard": {
+            "title": card_title,
+            "description": "시장 흐름을 더 자세히 확인할 수 있습니다.",
+            "buttons": [
+                {
+                    "action": "webLink",
+                    "label": button_label,
+                    "webLinkUrl": post_url
+                }
+            ]
+        }
+    })
+
+    return outputs
+
+
+def kakao_response_from_row(latest: dict | None, market_type: str) -> JSONResponse:
+    ui_meta = get_market_ui_meta(market_type)
+
     if not latest:
         return JSONResponse({
             "version": "2.0",
@@ -109,43 +180,19 @@ def kakao_response_from_row(latest: dict | None, empty_text: str) -> JSONRespons
                 "outputs": [
                     {
                         "simpleText": {
-                            "text": empty_text
+                            "text": ui_meta["fallback_empty"]
                         }
                     }
                 ]
             }
         })
 
-    text = build_summary_text(latest)
-    post_url = (latest.get("post_url") or DEFAULT_BLOG_URL).strip()
-    post_title = (latest.get("post_title") or "📊 오늘 시장 풀분석 보기").strip()
-
-    if len(text) > 950:
-        text = text[:950].rstrip() + "\n\n👉 아래 버튼에서 전체 분석을 확인하세요."
+    outputs = build_outputs_from_row(latest)
 
     return JSONResponse({
         "version": "2.0",
         "template": {
-            "outputs": [
-                {
-                    "simpleText": {
-                        "text": text
-                    }
-                },
-                {
-                    "basicCard": {
-                        "title": post_title,
-                        "description": "방금 발행된 최신 시장 분석 글로 이동합니다.",
-                        "buttons": [
-                            {
-                                "action": "webLink",
-                                "label": "최신 분석글 바로가기",
-                                "webLinkUrl": post_url
-                            }
-                        ]
-                    }
-                }
-            ]
+            "outputs": outputs
         }
     })
 
@@ -185,7 +232,7 @@ async def webhook_post():
 async def market_preopen():
     try:
         latest = fetch_latest_summary("kr_stock_preopen")
-        return kakao_response_from_row(latest, "개장 전 요약 데이터가 아직 없습니다.")
+        return kakao_response_from_row(latest, "kr_stock_preopen")
     except Exception as e:
         print("market_preopen error:", repr(e))
         return JSONResponse({
@@ -206,7 +253,7 @@ async def market_preopen():
 async def market_morning():
     try:
         latest = fetch_latest_summary("kr_stock_morning")
-        return kakao_response_from_row(latest, "오전 시황 데이터가 아직 없습니다.")
+        return kakao_response_from_row(latest, "kr_stock_morning")
     except Exception as e:
         print("market_morning error:", repr(e))
         return JSONResponse({
@@ -227,7 +274,7 @@ async def market_morning():
 async def market_close():
     try:
         latest = fetch_latest_summary("kr_stock_close")
-        return kakao_response_from_row(latest, "장마감 요약 데이터가 아직 없습니다.")
+        return kakao_response_from_row(latest, "kr_stock_close")
     except Exception as e:
         print("market_close error:", repr(e))
         return JSONResponse({
@@ -248,36 +295,45 @@ async def market_close():
 async def market_summary():
     try:
         latest = fetch_latest_summary("kr_stock_close")
+        current_type = "kr_stock_close"
+
         if not latest:
             latest = fetch_latest_summary("kr_stock_morning")
+            current_type = "kr_stock_morning"
+
         if not latest:
             latest = fetch_latest_summary("kr_stock_preopen")
+            current_type = "kr_stock_preopen"
 
-        return kakao_response_from_row(latest, "시장 요약 데이터가 아직 없습니다.")
+        return kakao_response_from_row(latest, current_type)
     except Exception as e:
         print("market_summary error:", repr(e))
+        fallback_outputs = [
+            {
+                "simpleText": {
+                    "text": "시장 요약을 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
+                }
+            }
+        ]
+
+        if DEFAULT_BLOG_URL:
+            fallback_outputs.append({
+                "basicCard": {
+                    "title": "📊 최신 분석글 보기",
+                    "description": "시장 분석 페이지로 바로 이동할 수 있습니다.",
+                    "buttons": [
+                        {
+                            "action": "webLink",
+                            "label": "최신 분석글 바로가기",
+                            "webLinkUrl": DEFAULT_BLOG_URL
+                        }
+                    ]
+                }
+            })
+
         return JSONResponse({
             "version": "2.0",
             "template": {
-                "outputs": [
-                    {
-                        "simpleText": {
-                            "text": "시장 요약을 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
-                        }
-                    },
-                    {
-                        "basicCard": {
-                            "title": "📊 최신 분석글 보기",
-                            "description": "시장 분석 페이지로 바로 이동할 수 있습니다.",
-                            "buttons": [
-                                {
-                                    "action": "webLink",
-                                    "label": "분석글 바로가기",
-                                    "webLinkUrl": DEFAULT_BLOG_URL
-                                }
-                            ]
-                        }
-                    }
-                ]
+                "outputs": fallback_outputs
             }
         })
