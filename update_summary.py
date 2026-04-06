@@ -23,7 +23,6 @@ WP_CATEGORY_ID = 12
 ADINSERTER_SHORTCODE = '[adinserter block="1"]'
 
 # 섹터별 대표 종목 + 가중치
-# weight 합은 섹터별로 1.0 기준 권장
 SECTOR_CONFIG = {
     "반도체": [
         {"ticker": "005930", "name": "삼성전자", "weight": 0.45},
@@ -37,14 +36,14 @@ SECTOR_CONFIG = {
         {"ticker": "247540", "name": "에코프로비엠", "weight": 0.22},
         {"ticker": "003670", "name": "포스코퓨처엠", "weight": 0.16},
         {"ticker": "066970", "name": "엘앤에프", "weight": 0.12},
-        {"ticker": "003490", "name": "대한전선", "weight": 0.12},
+        {"ticker": "006400", "name": "삼성SDI", "weight": 0.12},
     ],
     "AI/인터넷": [
         {"ticker": "035420", "name": "NAVER", "weight": 0.40},
         {"ticker": "035720", "name": "카카오", "weight": 0.28},
         {"ticker": "304100", "name": "솔트룩스", "weight": 0.12},
-        {"ticker": "318000", "name": "에스엠코어", "weight": 0.10},
         {"ticker": "047560", "name": "이스트소프트", "weight": 0.10},
+        {"ticker": "377300", "name": "카카오페이", "weight": 0.10},
     ],
     "자동차": [
         {"ticker": "005380", "name": "현대차", "weight": 0.50},
@@ -79,8 +78,8 @@ SECTOR_CONFIG = {
         {"ticker": "272210", "name": "한화시스템", "weight": 0.14},
     ],
     "은행": [
-        {"ticker": "055550", "name": "신한지주", "weight": 0.28},
         {"ticker": "105560", "name": "KB금융", "weight": 0.34},
+        {"ticker": "055550", "name": "신한지주", "weight": 0.28},
         {"ticker": "086790", "name": "하나금융지주", "weight": 0.22},
         {"ticker": "316140", "name": "우리금융지주", "weight": 0.16},
     ],
@@ -131,9 +130,6 @@ SECTOR_CONFIG = {
 DEFAULT_STRONG = ["데이터 확인 중"]
 DEFAULT_WEAK = ["데이터 확인 중"]
 
-DEFAULT_STRONG = ["데이터 확인 중"]
-DEFAULT_WEAK = ["데이터 확인 중"]
-
 
 def now_kst() -> datetime:
     return datetime.now(KST)
@@ -161,14 +157,14 @@ def stage_meta(stage: str) -> dict:
         return {
             "market_type": "kr_stock_morning",
             "title": "오늘의 오전 시황",
-            "one_line": None,  # 동적 생성
+            "one_line": None,
             "check_label": "남은 장 체크",
             "wp_keyword": "오전 시황",
         }
     return {
         "market_type": "kr_stock_close",
         "title": "오늘의 장마감 요약",
-        "one_line": None,  # 동적 생성
+        "one_line": None,
         "check_label": "내일 체크",
         "wp_keyword": "장마감 시황",
     }
@@ -212,7 +208,8 @@ def get_index_change(symbol: str, name: str) -> dict:
             "change_pct": change_pct,
             "direction": safe_direction(change_pct),
         }
-    except Exception:
+    except Exception as e:
+        print(f"get_index_change error [{symbol}]:", repr(e))
         return {
             "name": name,
             "close": 0.0,
@@ -236,7 +233,8 @@ def get_fx_change() -> dict | None:
             "change_pct": change_pct,
             "direction": safe_direction(change_pct),
         }
-    except Exception:
+    except Exception as e:
+        print("get_fx_change error:", repr(e))
         return None
 
 
@@ -259,7 +257,8 @@ def get_stock_change_pct(ticker: str) -> float | None:
             return None
 
         return round(((last - prev) / prev) * 100, 2)
-    except Exception:
+    except Exception as e:
+        print(f"get_stock_change_pct error [{ticker}]:", repr(e))
         return None
 
 
@@ -284,7 +283,6 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
         if not valid_items:
             continue
 
-        # 데이터가 있는 종목만 대상으로 가중치 재정규화
         weight_sum = sum(x["weight"] for x in valid_items)
         if weight_sum == 0:
             continue
@@ -379,6 +377,7 @@ def generate_news_items(raw: dict) -> list[str]:
 - 실제 뉴스 제목처럼 자연스럽게
 - 자극적 과장 금지
 - 시장 상황과 강한 섹터/약한 섹터를 반영
+- strong/weak sector는 입력 데이터 기준 사용
 - 2개만 작성
 - 반드시 JSON 배열 형식으로 출력
 
@@ -398,8 +397,8 @@ def generate_news_items(raw: dict) -> list[str]:
             items = json.loads(text)
             if isinstance(items, list) and len(items) >= 2:
                 return items[:2]
-        except Exception:
-            pass
+        except Exception as e:
+            print("generate_news_items error:", repr(e))
 
     return [
         "코스피·코스닥 흐름 엇갈려… 환율과 수급이 핵심 변수",
@@ -541,16 +540,6 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 - 전문가처럼 이유와 흐름을 설명
 - HTML 형식으로 작성
 - 제목(title), 요약(excerpt), 본문(content)을 JSON 형식으로 출력
-- 본문 구조:
-  1. 오늘 시장 한줄 요약
-  2. 시장 전체 흐름 분석
-  3. 지수 상세 분석
-  4. 강한 섹터와 그 이유
-  5. 약한 섹터와 그 이유
-  6. 글로벌 경제 이슈
-  7. 관련 뉴스 2개
-  8. 내일/남은 장 체크포인트
-  9. 투자 전략
 - strong/weak sector는 입력 데이터 기준 사용
 - news_items는 본문에 포함
 - 숫자는 유지
@@ -576,8 +565,8 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
             content = parsed["content"]
             slug = f"{raw['market_type']}-{raw['summary_date']}"
             return title, excerpt, insert_shortcode_ad(content), slug
-        except Exception:
-            pass
+        except Exception as e:
+            print("build_wordpress_article gpt error:", repr(e))
 
     fx_html = ""
     if raw["fx"]:
@@ -616,7 +605,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 
 <h2>🔥 강한 섹터와 이유</h2>
 <ul>{strong_html}</ul>
-<p>상대적으로 강세를 보인 섹터들로, 수급이 몰리거나 주도 테마로 해석될 가능성이 있습니다.</p>
+<p>상대적으로 강세를 보인 섹터들로, 대형주 중심의 가중치와 수급 흐름을 반영해 해석할 필요가 있습니다.</p>
 
 <h2>🍂 약한 섹터와 이유</h2>
 <ul>{weak_html}</ul>
