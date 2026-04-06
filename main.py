@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
@@ -7,22 +7,30 @@ app = FastAPI()
 def home():
     return {"message": "kakaobot server running"}
 
-@app.get("/webhook")
-def webhook_check():
-    return {"message": "webhook route exists"}
-
 @app.post("/webhook")
-async def webhook(request: Request):
-    body = await request.json()
-    print("kakao request:", body)
-
+async def webhook():
     return JSONResponse({
         "version": "2.0",
         "template": {
             "outputs": [
                 {
                     "simpleText": {
-                        "text": "정상 연결됨 ✅"
+                        "text": "웹훅 응답 ✅"
+                    }
+                }
+            ]
+        }
+    })
+
+@app.post("/kakao/market-summary")
+async def market_summary():
+    return JSONResponse({
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "simpleText": {
+                        "text": "오늘 시장 요약입니다 📈"
                     }
                 }
             ]
