@@ -22,7 +22,6 @@ KST = ZoneInfo("Asia/Seoul")
 WP_CATEGORY_ID = 12
 ADINSERTER_SHORTCODE = '[adinserter block="1"]'
 
-# 섹터별 대표 종목 + 가중치
 SECTOR_CONFIG = {
     "반도체": [
         {"ticker": "005930", "name": "삼성전자", "weight": 0.45},
@@ -152,6 +151,7 @@ def stage_meta(stage: str) -> dict:
             "one_line": "개장 전 주요 변수와 최근 시장 흐름을 기준으로 장을 준비하는 시간입니다.",
             "check_label": "오늘 체크",
             "wp_keyword": "개장 전 시황",
+            "fallback_post_title": "📘 어제 장마감 분석 보기",
         }
     if stage == "intraday":
         return {
@@ -160,6 +160,7 @@ def stage_meta(stage: str) -> dict:
             "one_line": None,
             "check_label": "남은 장 체크",
             "wp_keyword": "오전 시황",
+            "fallback_post_title": "📘 최근 장마감 분석 보기",
         }
     return {
         "market_type": "kr_stock_close",
@@ -167,6 +168,7 @@ def stage_meta(stage: str) -> dict:
         "one_line": None,
         "check_label": "내일 체크",
         "wp_keyword": "장마감 시황",
+        "fallback_post_title": "📊 오늘 장마감 분석 보기",
     }
 
 
@@ -270,8 +272,6 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
 
         for item in items:
             pct = get_stock_change_pct(item["ticker"])
-            print(f"[{sector}] {item['ticker']} {item['name']} = {pct}")
-
             if pct is not None:
                 valid_items.append({
                     "ticker": item["ticker"],
@@ -288,18 +288,11 @@ def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
             continue
 
         weighted_score = 0.0
-        details = []
-
         for x in valid_items:
             normalized_weight = x["weight"] / weight_sum
-            contrib = x["pct"] * normalized_weight
-            weighted_score += contrib
-            details.append(
-                f"{x['name']}({x['pct']}% × {round(normalized_weight, 4)})"
-            )
+            weighted_score += x["pct"] * normalized_weight
 
         sector_scores[sector] = round(weighted_score, 2)
-        print(f"[{sector}] weighted avg = {sector_scores[sector]}, details = {details}")
 
     if not sector_scores:
         return DEFAULT_STRONG, DEFAULT_WEAK, {}
@@ -335,38 +328,68 @@ def get_flow_summary(kospi_pct: float, kosdaq_pct: float, fx: dict | None) -> st
     return "혼조 흐름으로, 외국인·기관 수급 방향성을 추가 확인할 필요가 있습니다."
 
 
-def build_trade_points(
+def build_trade_points_fallback(
     strong_sectors: list[str],
     weak_sectors: list[str],
     sector_scores: dict,
     kospi: dict,
     kosdaq: dict,
+    fx: dict | None
 ) -> list[str]:
     points = []
 
+    market_up = kospi["change_pct"] > 0 and kosdaq["change_pct"] > 0
+    market_down = kospi["change_pct"] < 0 and kosdaq["change_pct"] < 0
+
     if strong_sectors:
-        strong = strong_sectors[0]
-        strong_score = sector_scores.get(strong)
-        if strong_score is not None:
-            points.append(f"{strong}는 상대 강도 {strong_score}%로 방어 또는 주도 여부를 확인할 필요가 있습니다.")
+        s = strong_sectors[0]
+        score = sector_scores.get(s, 0)
+        if market_up:
+            points.append(f"{s}는 시장 상승 속에서 {score}% 강세를 보이며 주도 섹터 가능성이 높습니다.")
+        elif market_down:
+            points.append(f"{s}는 시장 약세에도 {score}% 상승하며 방어적 강세가 나타나고 있습니다.")
+        else:
+            points.append(f"{s}는 혼조 장세 속에서 상대적으로 강한 흐름({score}%)을 유지하고 있습니다.")
 
     if weak_sectors:
-        weak = weak_sectors[0]
-        weak_score = sector_scores.get(weak)
-        if weak_score is not None:
-            points.append(f"{weak}는 {weak_score}% 수준의 약세를 보여 추가 하락 여부를 주시해야 합니다.")
+        w = weak_sectors[0]
+        score = sector_scores.get(w, 0)
+        if market_up:
+            points.append(f"{w}는 시장 상승에도 불구하고 {score}% 약세를 보이며 소외 흐름이 나타나고 있습니다.")
+        elif market_down:
+            points.append(f"{w}는 시장 하락과 함께 {score}% 약세를 보이며 동반 하락 흐름입니다.")
+        else:
+            points.append(f"{w}는 방향성 없는 장세에서 {score}% 약세를 보이며 힘이 부족한 상태입니다.")
 
-    if kospi["change_pct"] <= -2 or kosdaq["change_pct"] <= -2:
-        points.append("지수 급락 구간에서는 단기 반등보다 리스크 관리가 우선입니다.")
-    elif kospi["change_pct"] >= 1 or kosdaq["change_pct"] >= 1:
-        points.append("강세 구간에서는 추격 매수보다 주도 섹터 압축 여부를 살피는 것이 좋습니다.")
+    if fx:
+        if fx["direction"] == "상승":
+            points.append("환율 상승 흐름은 외국인 수급 부담과 수출주 강세 가능성을 함께 시사합니다.")
+        else:
+            points.append("환율 하락은 외국인 수급 개선 가능성을 시사합니다.")
+
+    if kospi["change_pct"] >= 1 or kosdaq["change_pct"] >= 1:
+        points.append("지수 강세 구간에서는 추격 매수보다 주도 섹터 집중 전략이 유효합니다.")
+    elif kospi["change_pct"] <= -1 or kosdaq["change_pct"] <= -1:
+        points.append("지수 약세 구간에서는 신규 진입보다 리스크 관리가 우선입니다.")
     else:
-        points.append("혼조 구간에서는 거래대금이 몰리는 종목과 테마를 체크해야 합니다.")
+        points.append("혼조 구간에서는 거래대금이 몰리는 종목 중심 대응이 중요합니다.")
 
-    return points[:3]
+    return points[:4]
+
+
+def openai_client():
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        from openai import OpenAI
+        return OpenAI(api_key=OPENAI_API_KEY)
+    except Exception as e:
+        print("openai_client error:", repr(e))
+        return None
 
 
 def generate_news_items(raw: dict) -> list[str]:
+    client = openai_client()
     prompt = f"""
 당신은 한국 주식시장 뉴스 에디터입니다.
 
@@ -377,18 +400,15 @@ def generate_news_items(raw: dict) -> list[str]:
 - 실제 뉴스 제목처럼 자연스럽게
 - 자극적 과장 금지
 - 시장 상황과 강한 섹터/약한 섹터를 반영
-- strong/weak sector는 입력 데이터 기준 사용
+- 입력에 없는 사실은 만들지 말 것
 - 2개만 작성
 - 반드시 JSON 배열 형식으로 출력
 
 입력 데이터:
 {json.dumps(raw, ensure_ascii=False)}
 """
-
-    if OPENAI_API_KEY:
+    if client:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
             response = client.responses.create(
                 model="gpt-5.4-mini",
                 input=prompt,
@@ -406,64 +426,52 @@ def generate_news_items(raw: dict) -> list[str]:
     ]
 
 
-def build_raw_summary() -> dict:
-    now = now_kst()
-    stage = market_stage(now)
-    meta = stage_meta(stage)
+def generate_trade_points_with_gpt(raw: dict) -> list[str]:
+    client = openai_client()
+    prompt = f"""
+당신은 한국 주식시장 데일리 시황 애널리스트입니다.
 
-    kospi = get_index_change("KS11", "코스피")
-    kosdaq = get_index_change("KQ11", "코스닥")
-    fx = get_fx_change()
+아래 입력 데이터만 바탕으로, 오늘의 매매 포인트 4개를 작성하세요.
 
-    strong_sectors, weak_sectors, sector_scores = infer_sectors_from_representatives()
-    market_temp = get_market_temperature(kospi["change_pct"], kosdaq["change_pct"])
-    flow_summary = get_flow_summary(kospi["change_pct"], kosdaq["change_pct"], fx)
-    trade_points = build_trade_points(strong_sectors, weak_sectors, sector_scores, kospi, kosdaq)
+규칙:
+- 한국어
+- 실제 투자 리포트처럼 자연스럽게
+- strong_sectors / weak_sectors / 지수흐름 / 환율 방향을 반드시 반영
+- 입력에 없는 뉴스, 숫자, 사실을 상상해서 쓰지 말 것
+- 과장 금지
+- 실질적으로 도움이 되도록 작성
+- 각 문장은 서로 다른 관점이어야 함
+- 반드시 JSON 배열 형식으로 출력
+- 문장 길이는 한 항목당 45자~90자 정도
+- "무조건 상승", "확실", "반드시" 같은 표현 금지
 
-    if stage == "pre_open":
-        one_line = meta["one_line"]
-    elif stage == "intraday":
-        one_line = f"오전 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
-    else:
-        one_line = f"오늘 시장은 코스피 {kospi['direction']}, 코스닥 {kosdaq['direction']} 흐름을 보였습니다."
+입력 데이터:
+{json.dumps(raw, ensure_ascii=False)}
+"""
+    if client:
+        try:
+            response = client.responses.create(
+                model="gpt-5.4-mini",
+                input=prompt,
+            )
+            text = response.output_text.strip()
+            items = json.loads(text)
+            if isinstance(items, list) and len(items) >= 3:
+                return items[:4]
+        except Exception as e:
+            print("generate_trade_points_with_gpt error:", repr(e))
 
-    news_items = generate_news_items({
-        "market_type": meta["market_type"],
-        "title": meta["title"],
-        "one_line": one_line,
-        "market_temperature": market_temp,
-        "flow_summary": flow_summary,
-        "kospi": kospi,
-        "kosdaq": kosdaq,
-        "fx": fx,
-        "strong_sectors": strong_sectors,
-        "weak_sectors": weak_sectors,
-        "sector_scores": sector_scores,
-        "trade_points": trade_points,
-        "check_label": meta["check_label"],
-    })
-
-    return {
-        "summary_date": str(date.today()),
-        "market_type": meta["market_type"],
-        "title": meta["title"],
-        "one_line": one_line,
-        "market_temperature": market_temp,
-        "flow_summary": flow_summary,
-        "trade_points": trade_points,
-        "kospi": kospi,
-        "kosdaq": kosdaq,
-        "fx": fx,
-        "strong_sectors": strong_sectors,
-        "weak_sectors": weak_sectors,
-        "sector_scores": sector_scores,
-        "check_label": meta["check_label"],
-        "news_items": news_items,
-        "wp_keyword": meta["wp_keyword"],
-    }
+    return build_trade_points_fallback(
+        raw["strong_sectors"],
+        raw["weak_sectors"],
+        raw["sector_scores"],
+        raw["kospi"],
+        raw["kosdaq"],
+        raw["fx"],
+    )
 
 
-def build_chat_text(raw: dict) -> str:
+def build_chat_text_fallback(raw: dict) -> str:
     fx = raw["fx"]
     fx_line = ""
     if fx:
@@ -520,6 +528,81 @@ def build_chat_text(raw: dict) -> str:
 """
 
 
+def generate_chat_text_with_gpt(raw: dict) -> str:
+    client = openai_client()
+    prompt = f"""
+당신은 카카오 채널용 한국 주식시장 시황 에디터입니다.
+
+아래 입력 데이터만 바탕으로 카카오 메시지용 시황 텍스트를 작성하세요.
+
+규칙:
+- 한국어
+- 투자 초보도 이해할 수 있게
+- 하지만 내용은 얕지 않게
+- 반드시 아래 섹션 순서를 유지
+- 입력에 없는 사실은 만들지 말 것
+- 숫자는 입력 데이터의 값만 사용
+- 지나치게 길지 않게, 전체 700자 이내 권장
+- 마지막 줄은 반드시 "👇 아래에서 시장 풀분석도 확인하세요"로 끝낼 것
+
+출력 형식:
+🌳 [제목]
+
+📌 오늘의 한줄
+...
+
+🌡 시장 온도
+- ...
+
+📊 지수 흐름
+- ...
+- ...
+- ...(환율 있으면)
+
+💰 수급 흐름
+- ...
+
+🔥 강한 섹터
+- ...
+- ...
+- ...
+
+🍂 약한 섹터
+- ...
+- ...
+- ...
+
+🎯 오늘의 매매 포인트
+- ...
+- ...
+- ...
+- ...
+
+📅 체크 라벨
+- 미국 증시 흐름
+- 환율
+- 외국인 수급
+
+👇 아래에서 시장 풀분석도 확인하세요
+
+입력 데이터:
+{json.dumps(raw, ensure_ascii=False)}
+"""
+    if client:
+        try:
+            response = client.responses.create(
+                model="gpt-5.4-mini",
+                input=prompt,
+            )
+            text = response.output_text.strip()
+            if text:
+                return text
+        except Exception as e:
+            print("generate_chat_text_with_gpt error:", repr(e))
+
+    return build_chat_text_fallback(raw)
+
+
 def insert_shortcode_ad(content: str) -> str:
     parts = content.split("<h2>")
     if len(parts) >= 5:
@@ -528,31 +611,48 @@ def insert_shortcode_ad(content: str) -> str:
 
 
 def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
+    client = openai_client()
     prompt = f"""
 당신은 한국 주식시장 전문 애널리스트이자 블로그 에디터입니다.
 
 아래 데이터를 바탕으로 WordPress용 시장 해설 글을 작성하세요.
 
-조건:
+중요 원칙:
 - 한국어
-- 너무 딱딱하지 않게
-- 초보자도 이해할 수 있게
-- 전문가처럼 이유와 흐름을 설명
-- HTML 형식으로 작성
-- 제목(title), 요약(excerpt), 본문(content)을 JSON 형식으로 출력
+- 초보자도 이해 가능하지만 얕지 않게
+- 실제 투자 판단에 도움이 되도록 작성
+- 입력 데이터에 없는 뉴스/사실/숫자는 만들지 말 것
 - strong/weak sector는 입력 데이터 기준 사용
-- news_items는 본문에 포함
-- 숫자는 유지
+- news_items는 반드시 본문에 포함
+- 과장 금지
+- 숫자는 입력 데이터 그대로 유지
+- HTML 형식
 - 출력은 반드시 JSON
+- JSON 키는 title, excerpt, content 3개
+
+본문 구조:
+1. 오늘 시장 한줄 요약
+2. 시장 전체 흐름 분석
+3. 지수 상세 분석
+4. 강한 섹터와 그 이유
+5. 약한 섹터와 그 이유
+6. 글로벌 경제 이슈
+7. 관련 뉴스 2개
+8. {raw["check_label"]}
+9. 투자 전략
+
+투자 전략 섹션은 특히 중요:
+- 단순 반복 문장 금지
+- 오늘 시장 구조에서 무엇을 먼저 확인해야 하는지
+- 추격/관망/압축/분산 중 어떤 태도가 유리한지
+- 강한 섹터와 약한 섹터를 어떻게 다르게 봐야 하는지
+를 구체적으로 써야 함
 
 입력 데이터:
 {json.dumps(raw, ensure_ascii=False)}
 """
-
-    if OPENAI_API_KEY:
+    if client:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
             response = client.responses.create(
                 model="gpt-5.4-mini",
                 input=prompt,
@@ -603,11 +703,11 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
   {fx_html}
 </ul>
 
-<h2>🔥 강한 섹터와 이유</h2>
+<h2>🔥 강한 섹터와 그 이유</h2>
 <ul>{strong_html}</ul>
-<p>상대적으로 강세를 보인 섹터들로, 대형주 중심의 가중치와 수급 흐름을 반영해 해석할 필요가 있습니다.</p>
+<p>상대적으로 강세를 보인 섹터들로, 대형주 중심의 가중치와 수급 흐름을 함께 해석할 필요가 있습니다.</p>
 
-<h2>🍂 약한 섹터와 이유</h2>
+<h2>🍂 약한 섹터와 그 이유</h2>
 <ul>{weak_html}</ul>
 <p>상대적으로 약세를 보인 섹터들로, 차익실현 또는 투자심리 위축 영향을 받았을 가능성이 있습니다.</p>
 
@@ -622,9 +722,8 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 
 <h2>💡 투자 전략</h2>
 <ul>{points_html}</ul>
-<p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 전략이 유효합니다.</p>
+<p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 대응이 유효합니다.</p>
 """
-
     slug = f"{raw['market_type']}-{raw['summary_date']}"
     return title, excerpt, insert_shortcode_ad(content), slug
 
@@ -658,6 +757,37 @@ def publish_to_wordpress(title: str, excerpt: str, content: str, slug: str) -> t
     return data["title"]["rendered"], data["link"]
 
 
+def fetch_latest_close_post_meta() -> tuple[str, str]:
+    url = (
+        f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+        f"?select=post_title,post_url,summary_date"
+        f"&market_type=eq.kr_stock_close"
+        f"&post_url=not.is.null"
+        f"&order=summary_date.desc"
+        f"&limit=1"
+    )
+
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    print("latest_close_status:", response.status_code)
+    print("latest_close_response:", response.text[:500])
+
+    if response.status_code not in [200]:
+        return "", ""
+
+    data = response.json()
+    if not isinstance(data, list) or len(data) == 0:
+        return "", ""
+
+    latest = data[0]
+    return (latest.get("post_title") or "").strip(), (latest.get("post_url") or "").strip()
+
+
 def upsert_summary(row: dict):
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?on_conflict=summary_date,market_type"
     headers = {
@@ -675,12 +805,74 @@ def upsert_summary(row: dict):
         raise Exception(f"Supabase update failed: {response.status_code} {response.text}")
 
 
+def build_raw_summary() -> dict:
+    now = now_kst()
+    stage = market_stage(now)
+    meta = stage_meta(stage)
+
+    kospi = get_index_change("KS11", "코스피")
+    kosdaq = get_index_change("KQ11", "코스닥")
+    fx = get_fx_change()
+
+    strong_sectors, weak_sectors, sector_scores = infer_sectors_from_representatives()
+    market_temp = get_market_temperature(kospi["change_pct"], kosdaq["change_pct"])
+    flow_summary = get_flow_summary(kospi["change_pct"], kosdaq["change_pct"], fx)
+
+    if stage == "pre_open":
+        one_line = meta["one_line"]
+    elif stage == "intraday":
+        one_line = f"오전 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
+    else:
+        one_line = f"오늘 시장은 코스피 {kospi['direction']}, 코스닥 {kosdaq['direction']} 흐름을 보였습니다."
+
+    raw = {
+        "summary_date": str(date.today()),
+        "market_type": meta["market_type"],
+        "title": meta["title"],
+        "one_line": one_line,
+        "market_temperature": market_temp,
+        "flow_summary": flow_summary,
+        "kospi": kospi,
+        "kosdaq": kosdaq,
+        "fx": fx,
+        "strong_sectors": strong_sectors,
+        "weak_sectors": weak_sectors,
+        "sector_scores": sector_scores,
+        "check_label": meta["check_label"],
+        "wp_keyword": meta["wp_keyword"],
+        "fallback_post_title": meta["fallback_post_title"],
+    }
+
+    raw["news_items"] = generate_news_items(raw)
+    raw["trade_points"] = generate_trade_points_with_gpt(raw)
+
+    return raw
+
+
 def main():
     raw = build_raw_summary()
-    chat_text = build_chat_text(raw)
+    chat_text = generate_chat_text_with_gpt(raw)
 
-    wp_title, wp_excerpt, wp_content, wp_slug = build_wordpress_article(raw)
-    post_title, post_url = publish_to_wordpress(wp_title, wp_excerpt, wp_content, wp_slug)
+    post_title = ""
+    post_url = ""
+
+    if raw["market_type"] == "kr_stock_close":
+        wp_title, wp_excerpt, wp_content, wp_slug = build_wordpress_article(raw)
+        post_title, post_url = publish_to_wordpress(wp_title, wp_excerpt, wp_content, wp_slug)
+    else:
+        last_close_title, last_close_url = fetch_latest_close_post_meta()
+        post_title = raw["fallback_post_title"]
+        post_url = last_close_url
+
+        if not post_url:
+            post_title = raw["title"]
+            post_url = ""
+
+        if last_close_title and raw["market_type"] == "kr_stock_morning":
+            post_title = "📘 최근 장마감 분석 보기"
+
+        if last_close_title and raw["market_type"] == "kr_stock_preopen":
+            post_title = "📘 어제 장마감 분석 보기"
 
     row = {
         "summary_date": raw["summary_date"],
@@ -690,7 +882,7 @@ def main():
         "kosdaq_text": f"코스닥은 {raw['kosdaq']['close']}에서 {raw['kosdaq']['change_pct']}% {raw['kosdaq']['direction']} 흐름입니다.",
         "strong_sectors": ", ".join(raw["strong_sectors"]),
         "weak_sectors": ", ".join(raw["weak_sectors"]),
-        "tomorrow_points": "미국 증시 흐름, 환율, 외국인 수급",
+        "tomorrow_points": " / ".join(raw["trade_points"]),
         "full_text": chat_text,
         "post_title": post_title,
         "post_url": post_url,
