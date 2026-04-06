@@ -1,20 +1,22 @@
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route("/", methods=["GET"])
+@app.get("/")
 def home():
-    return "Server Running"
+    return {"message": "kakaobot server running"}
 
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    if request.method == "GET":
-        return "Webhook route exists"
+@app.get("/webhook")
+def webhook_check():
+    return {"message": "webhook route exists"}
 
-    data = request.get_json(silent=True)
-    print("Kakao request:", data)
+@app.post("/webhook")
+async def webhook(request: Request):
+    body = await request.json()
+    print("kakao request:", body)
 
-    return jsonify({
+    return JSONResponse({
         "version": "2.0",
         "template": {
             "outputs": [
@@ -26,6 +28,3 @@ def webhook():
             ]
         }
     })
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
