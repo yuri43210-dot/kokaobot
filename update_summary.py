@@ -19,13 +19,9 @@ WP_APP_PASSWORD = os.environ["WP_APP_PASSWORD"].strip()
 TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
-# 워드프레스 카테고리 ID
 WP_CATEGORY_ID = 12
-
-# Ad Inserter 숏코드
 ADINSERTER_SHORTCODE = '[adinserter block="1"]'
 
-# 섹터별 대표 종목
 SECTOR_STOCKS = {
     "반도체": ["005930", "000660", "042700", "000990", "240810"],
     "2차전지": ["373220", "247540", "003670", "066970", "003490"],
@@ -51,6 +47,32 @@ def market_stage(now: datetime) -> str:
     if 900 <= hhmm < 1530:
         return "intraday"
     return "close"
+
+
+def stage_meta(stage: str) -> dict:
+    if stage == "pre_open":
+        return {
+            "market_type": "kr_stock_preopen",
+            "title": "오늘의 개장 전 체크",
+            "one_line": "개장 전 주요 변수와 최근 시장 흐름을 기준으로 장을 준비하는 시간입니다.",
+            "check_label": "오늘 체크",
+            "wp_keyword": "개장 전 시황",
+        }
+    if stage == "intraday":
+        return {
+            "market_type": "kr_stock_morning",
+            "title": "오늘의 오전 시황",
+            "one_line": None,  # 동적 생성
+            "check_label": "남은 장 체크",
+            "wp_keyword": "오전 시황",
+        }
+    return {
+        "market_type": "kr_stock_close",
+        "title": "오늘의 장마감 요약",
+        "one_line": None,  # 동적 생성
+        "check_label": "내일 체크",
+        "wp_keyword": "장마감 시황",
+    }
 
 
 def safe_direction(change_pct: float) -> str:
@@ -225,7 +247,7 @@ def generate_news_items(raw: dict) -> list[str]:
     prompt = f"""
 당신은 한국 주식시장 뉴스 에디터입니다.
 
-아래 시장 데이터 기반으로, 오늘 장마감 또는 장중 흐름과 관련된 뉴스 제목 2개를 작성하세요.
+아래 시장 데이터 기반으로, 오늘 시간대에 맞는 뉴스 제목 2개를 작성하세요.
 
 조건:
 - 한국어
@@ -263,6 +285,7 @@ def generate_news_items(raw: dict) -> list[str]:
 def build_raw_summary() -> dict:
     now = now_kst()
     stage = market_stage(now)
+    meta = stage_meta(stage)
 
     kospi = get_index_change("KS11", "코스피")
     kosdaq = get_index_change("KQ11", "코스닥")
@@ -274,20 +297,15 @@ def build_raw_summary() -> dict:
     trade_points = build_trade_points(strong_sectors, weak_sectors, sector_scores, kospi, kosdaq)
 
     if stage == "pre_open":
-        title = "오늘의 개장 전 체크"
-        one_line = "개장 전 주요 변수와 최근 시장 흐름을 기준으로 장을 준비하는 시간입니다."
-        check_label = "오늘 체크"
+        one_line = meta["one_line"]
     elif stage == "intraday":
-        title = "오늘의 장중 요약"
-        one_line = f"장중 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
-        check_label = "남은 장 체크"
+        one_line = f"오전 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
     else:
-        title = "오늘의 장마감 요약"
         one_line = f"오늘 시장은 코스피 {kospi['direction']}, 코스닥 {kosdaq['direction']} 흐름을 보였습니다."
-        check_label = "내일 체크"
 
     news_items = generate_news_items({
-        "title": title,
+        "market_type": meta["market_type"],
+        "title": meta["title"],
         "one_line": one_line,
         "market_temperature": market_temp,
         "flow_summary": flow_summary,
@@ -298,13 +316,13 @@ def build_raw_summary() -> dict:
         "weak_sectors": weak_sectors,
         "sector_scores": sector_scores,
         "trade_points": trade_points,
-        "check_label": check_label,
+        "check_label": meta["check_label"],
     })
 
     return {
         "summary_date": str(date.today()),
-        "market_type": "kr_stock",
-        "title": title,
+        "market_type": meta["market_type"],
+        "title": meta["title"],
         "one_line": one_line,
         "market_temperature": market_temp,
         "flow_summary": flow_summary,
@@ -315,8 +333,9 @@ def build_raw_summary() -> dict:
         "strong_sectors": strong_sectors,
         "weak_sectors": weak_sectors,
         "sector_scores": sector_scores,
-        "check_label": check_label,
+        "check_label": meta["check_label"],
         "news_items": news_items,
+        "wp_keyword": meta["wp_keyword"],
     }
 
 
@@ -378,7 +397,6 @@ def build_chat_text(raw: dict) -> str:
 
 
 def insert_shortcode_ad(content: str) -> str:
-    # 4번째 h2 앞에 광고 1회 삽입
     parts = content.split("<h2>")
     if len(parts) >= 5:
         return "<h2>".join(parts[:4]) + ADINSERTER_SHORTCODE + "<h2>" + "<h2>".join(parts[4:])
@@ -431,7 +449,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
             title = parsed["title"]
             excerpt = parsed["excerpt"]
             content = parsed["content"]
-            slug = f"market-{raw['summary_date']}-{raw['title'].replace(' ', '-')}"
+            slug = f"{raw['market_type']}-{raw['summary_date']}"
             return title, excerpt, insert_shortcode_ad(content), slug
         except Exception:
             pass
@@ -451,7 +469,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     points_html = "".join(f"<li>{p}</li>" for p in raw["trade_points"])
     news_html = "".join(f"<li>{item}</li>" for item in raw["news_items"])
 
-    title = f"{raw['summary_date']} {raw['title']} | 코스피·코스닥·환율 흐름"
+    title = f"{raw['summary_date']} {raw['wp_keyword']} | 코스피·코스닥·환율 흐름"
     excerpt = raw["one_line"]
 
     content = f"""
@@ -493,7 +511,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 <p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 전략이 유효합니다.</p>
 """
 
-    slug = f"market-{raw['summary_date']}-{raw['title'].replace(' ', '-')}"
+    slug = f"{raw['market_type']}-{raw['summary_date']}"
     return title, excerpt, insert_shortcode_ad(content), slug
 
 
