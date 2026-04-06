@@ -10,6 +10,58 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://moneycalc.wikitreee.com").strip()
 
 
+def build_summary_text(latest: dict) -> str:
+    full_text = (latest.get("full_text") or "").strip()
+    if full_text:
+        return full_text
+
+    one_line = (latest.get("one_line") or "").strip()
+    kospi_text = (latest.get("kospi_text") or "").strip()
+    kosdaq_text = (latest.get("kosdaq_text") or "").strip()
+    strong_sectors = (latest.get("strong_sectors") or "").strip()
+    weak_sectors = (latest.get("weak_sectors") or "").strip()
+    tomorrow_points = (latest.get("tomorrow_points") or "").strip()
+
+    parts = ["📌 [오늘의 시장 체크]"]
+
+    if one_line:
+        parts.append(f"\n☀ 오늘의 한줄\n{one_line}")
+
+    if kospi_text or kosdaq_text:
+        section = ["\n📊 지수 흐름"]
+        if kospi_text:
+            section.append(f"- {kospi_text}")
+        if kosdaq_text:
+            section.append(f"- {kosdaq_text}")
+        parts.append("\n".join(section))
+
+    if strong_sectors:
+        strong_lines = [x.strip() for x in strong_sectors.split(",") if x.strip()]
+        if strong_lines:
+            section = ["\n🚀 강한 섹터"]
+            for item in strong_lines:
+                section.append(f"- {item}")
+            parts.append("\n".join(section))
+
+    if weak_sectors:
+        weak_lines = [x.strip() for x in weak_sectors.split(",") if x.strip()]
+        if weak_lines:
+            section = ["\n🥶 약한 섹터"]
+            for item in weak_lines:
+                section.append(f"- {item}")
+            parts.append("\n".join(section))
+
+    if tomorrow_points:
+        parts.append(f"\n🎯 오늘의 체크 포인트\n{tomorrow_points}")
+
+    result = "\n".join(parts).strip()
+
+    if not result:
+        result = "오늘 시장 요약 데이터가 비어 있습니다."
+
+    return result
+
+
 @app.get("/")
 async def root():
     return {"message": "root ok"}
@@ -25,6 +77,22 @@ async def webhook_check():
     return {"message": "webhook route exists"}
 
 
+@app.post("/webhook")
+async def webhook_post():
+    return JSONResponse({
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "simpleText": {
+                        "text": "웹훅 응답 정상입니다."
+                    }
+                }
+            ]
+        }
+    })
+
+
 @app.post("/kakao/market-summary")
 async def market_summary():
     try:
@@ -32,21 +100,30 @@ async def market_summary():
 
         headers = {
             "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
         }
 
         response = requests.get(url, headers=headers, timeout=20)
+
+        print("REQUEST URL:", url)
+        print("STATUS:", response.status_code)
+        print("RESPONSE TEXT:", response.text[:1000])
+
         response.raise_for_status()
         data = response.json()
 
-        if not data or len(data) == 0:
+        if not isinstance(data, list):
+            raise Exception(f"Supabase response is not a list: {data}")
+
+        if len(data) == 0:
             return JSONResponse({
                 "version": "2.0",
                 "template": {
                     "outputs": [
                         {
                             "simpleText": {
-                                "text": "아직 등록된 시장 요약 데이터가 없습니다."
+                                "text": "market_summaries 테이블에 데이터가 없습니다."
                             }
                         }
                     ]
@@ -54,12 +131,14 @@ async def market_summary():
             })
 
         latest = data[0]
-        text = (latest.get("full_text") or "오늘 시장 요약 데이터가 비어 있습니다.").strip()
-        post_url = (latest.get("post_url") or DEFAULT_BLOG_URL).strip()
+        print("LATEST ROW:", latest)
 
-        # 카카오 응답 길이 안정성 확보용
+        text = build_summary_text(latest)
+        post_url = (latest.get("post_url") or DEFAULT_BLOG_URL).strip()
+        post_title = (latest.get("post_title") or "📊 오늘 시장 풀분석 보기").strip()
+
         if len(text) > 950:
-            text = text[:950] + "\n\n...아래 버튼에서 전체 분석을 확인하세요."
+            text = text[:950].rstrip() + "\n\n👉 아래 버튼에서 전체 분석을 확인하세요."
 
         return JSONResponse({
             "version": "2.0",
@@ -72,7 +151,7 @@ async def market_summary():
                     },
                     {
                         "basicCard": {
-                            "title": "📊 오늘 시장 풀분석 보기",
+                            "title": post_title,
                             "description": "방금 발행된 최신 시장 분석 글로 이동합니다.",
                             "buttons": [
                                 {
@@ -88,7 +167,7 @@ async def market_summary():
         })
 
     except Exception as e:
-        print("market_summary error:", str(e))
+        print("market_summary error:", repr(e))
 
         return JSONResponse({
             "version": "2.0",
