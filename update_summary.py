@@ -22,15 +22,114 @@ KST = ZoneInfo("Asia/Seoul")
 WP_CATEGORY_ID = 12
 ADINSERTER_SHORTCODE = '[adinserter block="1"]'
 
-SECTOR_STOCKS = {
-    "반도체": ["005930", "000660", "042700", "000990", "240810"],
-    "2차전지": ["373220", "247540", "003670", "066970", "003490"],
-    "AI": ["035420", "035720", "304100", "318000", "047560"],
-    "자동차": ["005380", "000270", "012330", "204320"],
-    "바이오": ["207940", "068270", "196170", "028300", "000100"],
-    "게임": ["259960", "036570", "251270", "263750"],
-    "조선": ["009540", "042660", "010140", "329180"],
+# 섹터별 대표 종목 + 가중치
+# weight 합은 섹터별로 1.0 기준 권장
+SECTOR_CONFIG = {
+    "반도체": [
+        {"ticker": "005930", "name": "삼성전자", "weight": 0.45},
+        {"ticker": "000660", "name": "SK하이닉스", "weight": 0.35},
+        {"ticker": "042700", "name": "한미반도체", "weight": 0.08},
+        {"ticker": "000990", "name": "DB하이텍", "weight": 0.06},
+        {"ticker": "240810", "name": "원익IPS", "weight": 0.06},
+    ],
+    "2차전지": [
+        {"ticker": "373220", "name": "LG에너지솔루션", "weight": 0.38},
+        {"ticker": "247540", "name": "에코프로비엠", "weight": 0.22},
+        {"ticker": "003670", "name": "포스코퓨처엠", "weight": 0.16},
+        {"ticker": "066970", "name": "엘앤에프", "weight": 0.12},
+        {"ticker": "003490", "name": "대한전선", "weight": 0.12},
+    ],
+    "AI/인터넷": [
+        {"ticker": "035420", "name": "NAVER", "weight": 0.40},
+        {"ticker": "035720", "name": "카카오", "weight": 0.28},
+        {"ticker": "304100", "name": "솔트룩스", "weight": 0.12},
+        {"ticker": "318000", "name": "에스엠코어", "weight": 0.10},
+        {"ticker": "047560", "name": "이스트소프트", "weight": 0.10},
+    ],
+    "자동차": [
+        {"ticker": "005380", "name": "현대차", "weight": 0.50},
+        {"ticker": "000270", "name": "기아", "weight": 0.35},
+        {"ticker": "012330", "name": "현대모비스", "weight": 0.10},
+        {"ticker": "204320", "name": "HL만도", "weight": 0.05},
+    ],
+    "바이오": [
+        {"ticker": "207940", "name": "삼성바이오로직스", "weight": 0.34},
+        {"ticker": "068270", "name": "셀트리온", "weight": 0.30},
+        {"ticker": "196170", "name": "알테오젠", "weight": 0.16},
+        {"ticker": "028300", "name": "HLB", "weight": 0.10},
+        {"ticker": "000100", "name": "유한양행", "weight": 0.10},
+    ],
+    "게임": [
+        {"ticker": "259960", "name": "크래프톤", "weight": 0.36},
+        {"ticker": "036570", "name": "엔씨소프트", "weight": 0.20},
+        {"ticker": "251270", "name": "넷마블", "weight": 0.18},
+        {"ticker": "263750", "name": "펄어비스", "weight": 0.14},
+        {"ticker": "112040", "name": "위메이드", "weight": 0.12},
+    ],
+    "조선": [
+        {"ticker": "009540", "name": "HD한국조선해양", "weight": 0.36},
+        {"ticker": "042660", "name": "한화오션", "weight": 0.26},
+        {"ticker": "010140", "name": "삼성중공업", "weight": 0.20},
+        {"ticker": "329180", "name": "HD현대중공업", "weight": 0.18},
+    ],
+    "방산": [
+        {"ticker": "012450", "name": "한화에어로스페이스", "weight": 0.42},
+        {"ticker": "079550", "name": "LIG넥스원", "weight": 0.24},
+        {"ticker": "047810", "name": "한국항공우주", "weight": 0.20},
+        {"ticker": "272210", "name": "한화시스템", "weight": 0.14},
+    ],
+    "은행": [
+        {"ticker": "055550", "name": "신한지주", "weight": 0.28},
+        {"ticker": "105560", "name": "KB금융", "weight": 0.34},
+        {"ticker": "086790", "name": "하나금융지주", "weight": 0.22},
+        {"ticker": "316140", "name": "우리금융지주", "weight": 0.16},
+    ],
+    "증권": [
+        {"ticker": "006800", "name": "미래에셋증권", "weight": 0.30},
+        {"ticker": "005940", "name": "NH투자증권", "weight": 0.24},
+        {"ticker": "039490", "name": "키움증권", "weight": 0.24},
+        {"ticker": "016360", "name": "삼성증권", "weight": 0.22},
+    ],
+    "통신": [
+        {"ticker": "017670", "name": "SK텔레콤", "weight": 0.40},
+        {"ticker": "030200", "name": "KT", "weight": 0.34},
+        {"ticker": "032640", "name": "LG유플러스", "weight": 0.26},
+    ],
+    "화장품/소비재": [
+        {"ticker": "090430", "name": "아모레퍼시픽", "weight": 0.32},
+        {"ticker": "161890", "name": "한국콜마", "weight": 0.22},
+        {"ticker": "214450", "name": "파마리서치", "weight": 0.16},
+        {"ticker": "051900", "name": "LG생활건강", "weight": 0.18},
+        {"ticker": "007310", "name": "오뚜기", "weight": 0.12},
+    ],
+    "철강": [
+        {"ticker": "005490", "name": "POSCO홀딩스", "weight": 0.48},
+        {"ticker": "004020", "name": "현대제철", "weight": 0.28},
+        {"ticker": "001430", "name": "세아베스틸지주", "weight": 0.14},
+        {"ticker": "460860", "name": "동국제강", "weight": 0.10},
+    ],
+    "건설": [
+        {"ticker": "000720", "name": "현대건설", "weight": 0.34},
+        {"ticker": "028260", "name": "삼성물산", "weight": 0.28},
+        {"ticker": "047040", "name": "대우건설", "weight": 0.20},
+        {"ticker": "006360", "name": "GS건설", "weight": 0.18},
+    ],
+    "에너지": [
+        {"ticker": "267250", "name": "HD현대", "weight": 0.30},
+        {"ticker": "096770", "name": "SK이노베이션", "weight": 0.28},
+        {"ticker": "010950", "name": "S-Oil", "weight": 0.24},
+        {"ticker": "078930", "name": "GS", "weight": 0.18},
+    ],
+    "엔터/미디어": [
+        {"ticker": "352820", "name": "하이브", "weight": 0.42},
+        {"ticker": "041510", "name": "에스엠", "weight": 0.22},
+        {"ticker": "122870", "name": "와이지엔터테인먼트", "weight": 0.18},
+        {"ticker": "035900", "name": "JYP Ent.", "weight": 0.18},
+    ],
 }
+
+DEFAULT_STRONG = ["데이터 확인 중"]
+DEFAULT_WEAK = ["데이터 확인 중"]
 
 DEFAULT_STRONG = ["데이터 확인 중"]
 DEFAULT_WEAK = ["데이터 확인 중"]
@@ -167,23 +266,49 @@ def get_stock_change_pct(ticker: str) -> float | None:
 def infer_sectors_from_representatives() -> tuple[list[str], list[str], dict]:
     sector_scores = {}
 
-    for sector, tickers in SECTOR_STOCKS.items():
-        changes = []
+    for sector, items in SECTOR_CONFIG.items():
+        valid_items = []
 
-        for ticker in tickers:
-            pct = get_stock_change_pct(ticker)
+        for item in items:
+            pct = get_stock_change_pct(item["ticker"])
+            print(f"[{sector}] {item['ticker']} {item['name']} = {pct}")
+
             if pct is not None:
-                changes.append(pct)
+                valid_items.append({
+                    "ticker": item["ticker"],
+                    "name": item["name"],
+                    "weight": item["weight"],
+                    "pct": pct,
+                })
 
-        if changes:
-            sector_scores[sector] = round(sum(changes) / len(changes), 2)
+        if not valid_items:
+            continue
+
+        # 데이터가 있는 종목만 대상으로 가중치 재정규화
+        weight_sum = sum(x["weight"] for x in valid_items)
+        if weight_sum == 0:
+            continue
+
+        weighted_score = 0.0
+        details = []
+
+        for x in valid_items:
+            normalized_weight = x["weight"] / weight_sum
+            contrib = x["pct"] * normalized_weight
+            weighted_score += contrib
+            details.append(
+                f"{x['name']}({x['pct']}% × {round(normalized_weight, 4)})"
+            )
+
+        sector_scores[sector] = round(weighted_score, 2)
+        print(f"[{sector}] weighted avg = {sector_scores[sector]}, details = {details}")
 
     if not sector_scores:
         return DEFAULT_STRONG, DEFAULT_WEAK, {}
 
     sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
-    strong = [name for name, _ in sorted_sectors[:2]]
-    weak = [name for name, _ in sorted_sectors[-2:]]
+    strong = [name for name, _ in sorted_sectors[:3]]
+    weak = [name for name, _ in sorted_sectors[-3:]]
 
     return strong, weak, sector_scores
 
