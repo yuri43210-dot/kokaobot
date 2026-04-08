@@ -15,7 +15,7 @@ TABLE_NAME = "market_summaries"
 def get_common_quick_replies() -> list:
     return [
         {
-            "label": "🌅 개장 전",
+            "label": "🔒 개장 전",
             "action": "message",
             "messageText": "개장 전"
         },
@@ -37,27 +37,33 @@ def get_common_quick_replies() -> list:
     ]
 
 
+def build_kakao_response(outputs: list, quick_replies: list | None = None) -> JSONResponse:
+    payload = {
+        "version": "2.0",
+        "template": {
+            "outputs": outputs,
+            "quickReplies": quick_replies or get_common_quick_replies()
+        }
+    }
+    return JSONResponse(payload)
+
+
 def get_market_ui_meta(market_type: str) -> dict:
     mapping = {
         "kr_stock_preopen": {
             "header_title": "📌 [오늘의 개장 전 체크]",
-            "button_label": "어제 장마감 분석 보기",
-            "fallback_empty": "개장 전 요약 데이터가 아직 없습니다.",
+            "button_label": "오늘 장마감 분석 보기",
+            "fallback_empty": "개장 전 시황은 장 시작 전 정리됩니다. 밤사이 글로벌 변수와 미국장 흐름을 반영해 업데이트됩니다.",
         },
         "kr_stock_morning": {
             "header_title": "📌 [오늘의 오전 시황]",
-            "button_label": "최근 장마감 분석 보기",
-            "fallback_empty": "오전 시황 데이터가 아직 없습니다.",
+            "button_label": "오늘 장마감 분석 보기",
+            "fallback_empty": "오전 시황은 13시에 정리됩니다. 장 초반 흐름이 더 확인된 뒤 업데이트됩니다.",
         },
         "kr_stock_close": {
             "header_title": "📌 [오늘의 장마감 요약]",
             "button_label": "오늘 장마감 분석 보기",
-            "fallback_empty": "장마감 요약 데이터가 아직 없습니다.",
-        },
-        "global_macro": {
-            "header_title": "📌 [글로벌 경제 지수]",
-            "button_label": "글로벌 지표 확인하기",
-            "fallback_empty": "글로벌 경제 지수 데이터가 아직 없습니다.",
+            "fallback_empty": "아직 한국장이 마감되지 않았습니다. 장 마감 후 마감 시황이 정리됩니다.",
         },
     }
     return mapping.get(
@@ -200,16 +206,6 @@ def build_outputs_from_row(latest: dict) -> list:
     return outputs
 
 
-def build_kakao_response(outputs: list) -> JSONResponse:
-    return JSONResponse({
-        "version": "2.0",
-        "template": {
-            "outputs": outputs,
-            "quickReplies": get_common_quick_replies()
-        }
-    })
-
-
 def kakao_response_from_row(latest: dict | None, market_type: str) -> JSONResponse:
     ui_meta = get_market_ui_meta(market_type)
 
@@ -262,7 +258,7 @@ async def market_preopen():
         return build_kakao_response([
             {
                 "simpleText": {
-                    "text": "개장 전 요약을 불러오는 중 문제가 발생했습니다."
+                    "text": "개장 전 시황을 불러오는 중 문제가 발생했습니다."
                 }
             }
         ])
@@ -294,23 +290,7 @@ async def market_close():
         return build_kakao_response([
             {
                 "simpleText": {
-                    "text": "장마감 요약을 불러오는 중 문제가 발생했습니다."
-                }
-            }
-        ])
-
-
-@app.post("/kakao/market-global")
-async def market_global():
-    try:
-        latest = fetch_latest_summary("global_macro")
-        return kakao_response_from_row(latest, "global_macro")
-    except Exception as e:
-        print("market_global error:", repr(e))
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": "글로벌 경제 지수를 불러오는 중 문제가 발생했습니다."
+                    "text": "장마감 시황을 불러오는 중 문제가 발생했습니다."
                 }
             }
         ])
@@ -333,6 +313,7 @@ async def market_summary():
         return kakao_response_from_row(latest, current_type)
     except Exception as e:
         print("market_summary error:", repr(e))
+
         fallback_outputs = [
             {
                 "simpleText": {
