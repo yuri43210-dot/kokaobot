@@ -135,6 +135,11 @@ def now_kst() -> datetime:
 
 
 def market_stage(now: datetime) -> str:
+    forced_stage = os.environ.get("FORCE_STAGE", "").strip()
+    if forced_stage in ["pre_open", "intraday", "close"]:
+        print("FORCE_STAGE applied:", forced_stage)
+        return forced_stage
+
     hhmm = now.hour * 100 + now.minute
     if hhmm < 900:
         return "pre_open"
@@ -148,10 +153,9 @@ def stage_meta(stage: str) -> dict:
         return {
             "market_type": "kr_stock_preopen",
             "title": "오늘의 개장 전 체크",
-            "one_line": "개장 전 주요 변수와 최근 시장 흐름을 기준으로 장을 준비하는 시간입니다.",
+            "one_line": None,
             "check_label": "오늘 체크",
             "wp_keyword": "개장 전 시황",
-            "fallback_post_title": "📘 어제 장마감 분석 보기",
         }
     if stage == "intraday":
         return {
@@ -160,7 +164,6 @@ def stage_meta(stage: str) -> dict:
             "one_line": None,
             "check_label": "남은 장 체크",
             "wp_keyword": "오전 시황",
-            "fallback_post_title": "📘 최근 장마감 분석 보기",
         }
     return {
         "market_type": "kr_stock_close",
@@ -168,7 +171,6 @@ def stage_meta(stage: str) -> dict:
         "one_line": None,
         "check_label": "내일 체크",
         "wp_keyword": "장마감 시황",
-        "fallback_post_title": "📊 오늘 장마감 분석 보기",
     }
 
 
@@ -471,29 +473,80 @@ def generate_trade_points_with_gpt(raw: dict) -> list[str]:
     )
 
 
-def build_chat_text_fallback(raw: dict) -> str:
+def build_preopen_fallback_text(raw: dict) -> str:
+    fx = raw["fx"]
+    fx_text = ""
+    if fx:
+        fx_text = f"- 원달러 환율: {fx['close']} ({fx['direction']}, {fx['change_pct']}%)\n"
+
+    strong_lines = [f"- {sector} ({raw['sector_scores'].get(sector, 'n/a')}%)" for sector in raw["strong_sectors"]]
+    point_lines = [f"- {p}" for p in raw["trade_points"][:3]]
+
+    return f"""🌳 [{raw['title']}]
+
+📌 오늘의 한줄
+{raw['one_line']}
+
+🌍 밤사이 체크
+- 미국장 흐름: 한국장 투자심리에 직접 영향을 줄 수 있습니다.
+{fx_text}📊 예상 포인트
+- 코스피: {raw['kospi']['close']} ({raw['kospi']['change_pct']}%)
+- 코스닥: {raw['kosdaq']['close']} ({raw['kosdaq']['change_pct']}%)
+
+🔥 주목 섹터
+{chr(10).join(strong_lines)}
+
+🎯 오늘 체크
+{chr(10).join(point_lines)}
+
+👇 아래에서 시장 풀분석도 확인하세요
+"""
+
+
+def build_morning_fallback_text(raw: dict) -> str:
     fx = raw["fx"]
     fx_line = ""
     if fx:
         fx_line = f"\n- 원달러 환율: {fx['close']} ({fx['direction']}, {fx['change_pct']}%)"
 
-    strong_lines = []
-    for sector in raw["strong_sectors"]:
-        score = raw["sector_scores"].get(sector)
-        if score is not None:
-            strong_lines.append(f"- {sector} ({score}%)")
-        else:
-            strong_lines.append(f"- {sector}")
+    strong_lines = [f"- {sector} ({raw['sector_scores'].get(sector, 'n/a')}%)" for sector in raw["strong_sectors"]]
+    weak_lines = [f"- {sector} ({raw['sector_scores'].get(sector, 'n/a')}%)" for sector in raw["weak_sectors"]]
+    point_lines = [f"- {p}" for p in raw["trade_points"][:4]]
 
-    weak_lines = []
-    for sector in raw["weak_sectors"]:
-        score = raw["sector_scores"].get(sector)
-        if score is not None:
-            weak_lines.append(f"- {sector} ({score}%)")
-        else:
-            weak_lines.append(f"- {sector}")
+    return f"""🌳 [{raw['title']}]
 
-    point_lines = [f"- {p}" for p in raw["trade_points"]]
+📌 오전 한줄 요약
+{raw['one_line']}
+
+📊 오전 지수 흐름
+- 코스피: {raw['kospi']['close']} ({raw['kospi']['change_pct']}%)
+- 코스닥: {raw['kosdaq']['close']} ({raw['kosdaq']['change_pct']}%){fx_line}
+
+💰 오전 수급 흐름
+- {raw['flow_summary']}
+
+🔥 오전 강한 섹터
+{chr(10).join(strong_lines)}
+
+🍂 오전 약한 섹터
+{chr(10).join(weak_lines)}
+
+🎯 남은 장 체크
+{chr(10).join(point_lines)}
+
+👇 아래에서 시장 풀분석도 확인하세요
+"""
+
+
+def build_close_fallback_text(raw: dict) -> str:
+    fx = raw["fx"]
+    fx_line = ""
+    if fx:
+        fx_line = f"\n- 원달러 환율: {fx['close']} ({fx['direction']}, {fx['change_pct']}%)"
+
+    strong_lines = [f"- {sector} ({raw['sector_scores'].get(sector, 'n/a')}%)" for sector in raw["strong_sectors"]]
+    weak_lines = [f"- {sector} ({raw['sector_scores'].get(sector, 'n/a')}%)" for sector in raw["weak_sectors"]]
+    point_lines = [f"- {p}" for p in raw["trade_points"][:4]]
 
     return f"""🌳 [{raw['title']}]
 
@@ -503,11 +556,11 @@ def build_chat_text_fallback(raw: dict) -> str:
 🌡 시장 온도
 - {raw['market_temperature']}
 
-📊 지수 흐름
+📊 마감 지수 흐름
 - 코스피: {raw['kospi']['close']} ({raw['kospi']['change_pct']}%)
 - 코스닥: {raw['kosdaq']['close']} ({raw['kosdaq']['change_pct']}%){fx_line}
 
-💰 수급 흐름
+💰 마감 수급 흐름
 - {raw['flow_summary']}
 
 🔥 강한 섹터
@@ -516,13 +569,8 @@ def build_chat_text_fallback(raw: dict) -> str:
 🍂 약한 섹터
 {chr(10).join(weak_lines)}
 
-🎯 오늘의 매매 포인트
+🎯 내일 체크 포인트
 {chr(10).join(point_lines)}
-
-📅 {raw['check_label']}
-- 미국 증시 흐름
-- 환율
-- 외국인 수급
 
 👇 아래에서 시장 풀분석도 확인하세요
 """
@@ -530,8 +578,57 @@ def build_chat_text_fallback(raw: dict) -> str:
 
 def generate_chat_text_with_gpt(raw: dict) -> str:
     client = openai_client()
-    prompt = f"""
-당신은 카카오 채널용 한국 주식시장 시황 에디터입니다.
+
+    stage_prompt_map = {
+        "kr_stock_preopen": """
+당신은 한국 주식시장 개장 전 시황 에디터입니다.
+개장 전 리포트답게 작성하세요.
+
+핵심 방향:
+- 밤사이 미국장 흐름
+- 환율/달러 움직임
+- 한국장 개장에 어떤 영향을 줄 수 있는지
+- 오늘 주목 섹터
+- 개장 직후 무엇을 확인해야 하는지
+
+중요:
+- 아직 한국장은 시작 전이라는 점을 반영
+- 어제 마감 요약처럼 쓰지 말 것
+- "준비", "영향", "개장 후 확인" 관점으로 작성
+""",
+        "kr_stock_morning": """
+당신은 한국 주식시장 오전 시황 에디터입니다.
+오전 시황답게 작성하세요.
+
+핵심 방향:
+- 오전 실제 흐름 요약
+- 지수/섹터 강약
+- 장 초반 자금이 어디로 몰리는지
+- 남은 장에서 무엇을 확인해야 하는지
+
+중요:
+- 마감 요약처럼 쓰지 말 것
+- 아직 장중이라는 점을 반영
+- '오전 기준', '장 초반', '남은 장' 관점으로 작성
+""",
+        "kr_stock_close": """
+당신은 한국 주식시장 장마감 시황 에디터입니다.
+마감 리포트답게 작성하세요.
+
+핵심 방향:
+- 오늘 시장이 어떻게 끝났는지
+- 강/약 섹터 정리
+- 수급 흐름 의미
+- 내일 체크할 변수
+
+중요:
+- 장이 끝난 시점이라는 점을 반영
+- 하루 결론과 내일 준비 관점으로 작성
+""",
+    }
+
+    common_prompt = f"""
+{stage_prompt_map.get(raw["market_type"], "")}
 
 아래 입력 데이터만 바탕으로 카카오 메시지용 시황 텍스트를 작성하세요.
 
@@ -545,46 +642,6 @@ def generate_chat_text_with_gpt(raw: dict) -> str:
 - 지나치게 길지 않게, 전체 700자 이내 권장
 - 마지막 줄은 반드시 "👇 아래에서 시장 풀분석도 확인하세요"로 끝낼 것
 
-출력 형식:
-🌳 [제목]
-
-📌 오늘의 한줄
-...
-
-🌡 시장 온도
-- ...
-
-📊 지수 흐름
-- ...
-- ...
-- ...(환율 있으면)
-
-💰 수급 흐름
-- ...
-
-🔥 강한 섹터
-- ...
-- ...
-- ...
-
-🍂 약한 섹터
-- ...
-- ...
-- ...
-
-🎯 오늘의 매매 포인트
-- ...
-- ...
-- ...
-- ...
-
-📅 체크 라벨
-- 미국 증시 흐름
-- 환율
-- 외국인 수급
-
-👇 아래에서 시장 풀분석도 확인하세요
-
 입력 데이터:
 {json.dumps(raw, ensure_ascii=False)}
 """
@@ -592,7 +649,7 @@ def generate_chat_text_with_gpt(raw: dict) -> str:
         try:
             response = client.responses.create(
                 model="gpt-5.4-mini",
-                input=prompt,
+                input=common_prompt,
             )
             text = response.output_text.strip()
             if text:
@@ -600,7 +657,11 @@ def generate_chat_text_with_gpt(raw: dict) -> str:
         except Exception as e:
             print("generate_chat_text_with_gpt error:", repr(e))
 
-    return build_chat_text_fallback(raw)
+    if raw["market_type"] == "kr_stock_preopen":
+        return build_preopen_fallback_text(raw)
+    if raw["market_type"] == "kr_stock_morning":
+        return build_morning_fallback_text(raw)
+    return build_close_fallback_text(raw)
 
 
 def insert_shortcode_ad(content: str) -> str:
@@ -615,7 +676,7 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
     prompt = f"""
 당신은 한국 주식시장 전문 애널리스트이자 블로그 에디터입니다.
 
-아래 데이터를 바탕으로 WordPress용 시장 해설 글을 작성하세요.
+아래 데이터를 바탕으로 WordPress용 장마감 해설 글을 작성하세요.
 
 중요 원칙:
 - 한국어
@@ -638,15 +699,8 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 5. 약한 섹터와 그 이유
 6. 글로벌 경제 이슈
 7. 관련 뉴스 2개
-8. {raw["check_label"]}
+8. 내일 체크
 9. 투자 전략
-
-투자 전략 섹션은 특히 중요:
-- 단순 반복 문장 금지
-- 오늘 시장 구조에서 무엇을 먼저 확인해야 하는지
-- 추격/관망/압축/분산 중 어떤 태도가 유리한지
-- 강한 섹터와 약한 섹터를 어떻게 다르게 봐야 하는지
-를 구체적으로 써야 함
 
 입력 데이터:
 {json.dumps(raw, ensure_ascii=False)}
@@ -705,24 +759,21 @@ def build_wordpress_article(raw: dict) -> tuple[str, str, str, str]:
 
 <h2>🔥 강한 섹터와 그 이유</h2>
 <ul>{strong_html}</ul>
-<p>상대적으로 강세를 보인 섹터들로, 대형주 중심의 가중치와 수급 흐름을 함께 해석할 필요가 있습니다.</p>
 
 <h2>🍂 약한 섹터와 그 이유</h2>
 <ul>{weak_html}</ul>
-<p>상대적으로 약세를 보인 섹터들로, 차익실현 또는 투자심리 위축 영향을 받았을 가능성이 있습니다.</p>
 
 <h2>🌍 글로벌 경제 이슈</h2>
-<p>미국 증시 흐름, 달러 움직임, 금리 기대 변화는 국내 주식시장에 직접적인 영향을 줄 수 있습니다. 특히 환율 방향은 외국인 수급과 연결될 가능성이 높습니다.</p>
+<p>미국 증시 흐름, 달러 움직임, 금리 기대 변화는 국내 주식시장에 직접적인 영향을 줄 수 있습니다.</p>
 
 <h2>📰 관련 뉴스</h2>
 <ul>{news_html}</ul>
 
-<h2>📌 {raw["check_label"]}</h2>
-<p>미국 증시 방향, 원달러 환율, 외국인 수급 지속 여부를 함께 확인해야 합니다. 특히 강한 섹터가 계속 주도권을 유지하는지가 중요합니다.</p>
+<h2>📌 내일 체크</h2>
+<p>미국 증시 방향, 원달러 환율, 외국인 수급 지속 여부를 함께 확인해야 합니다.</p>
 
 <h2>💡 투자 전략</h2>
 <ul>{points_html}</ul>
-<p>강한 섹터는 추세 지속 여부를, 약한 섹터는 추가 하락 여부를 중심으로 보는 대응이 유효합니다.</p>
 """
     slug = f"{raw['market_type']}-{raw['summary_date']}"
     return title, excerpt, insert_shortcode_ad(content), slug
@@ -757,37 +808,6 @@ def publish_to_wordpress(title: str, excerpt: str, content: str, slug: str) -> t
     return data["title"]["rendered"], data["link"]
 
 
-def fetch_latest_close_post_meta() -> tuple[str, str]:
-    url = (
-        f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
-        f"?select=post_title,post_url,summary_date"
-        f"&market_type=eq.kr_stock_close"
-        f"&post_url=not.is.null"
-        f"&order=summary_date.desc"
-        f"&limit=1"
-    )
-
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    response = requests.get(url, headers=headers, timeout=20)
-    print("latest_close_status:", response.status_code)
-    print("latest_close_response:", response.text[:500])
-
-    if response.status_code not in [200]:
-        return "", ""
-
-    data = response.json()
-    if not isinstance(data, list) or len(data) == 0:
-        return "", ""
-
-    latest = data[0]
-    return (latest.get("post_title") or "").strip(), (latest.get("post_url") or "").strip()
-
-
 def upsert_summary(row: dict):
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}?on_conflict=summary_date,market_type"
     headers = {
@@ -805,10 +825,27 @@ def upsert_summary(row: dict):
         raise Exception(f"Supabase update failed: {response.status_code} {response.text}")
 
 
+def build_preopen_one_line(kospi: dict, kosdaq: dict, fx: dict | None) -> str:
+    if fx:
+        return f"미국장 흐름과 환율 변화를 반영하면 오늘 한국장은 개장 초반 업종별 차별화 가능성을 먼저 확인할 필요가 있습니다."
+    return f"밤사이 글로벌 변수와 미국장 흐름을 바탕으로 오늘 한국장 개장 초반 방향성을 점검할 필요가 있습니다."
+
+
+def build_morning_one_line(kospi: dict, kosdaq: dict) -> str:
+    return f"오전 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
+
+
+def build_close_one_line(kospi: dict, kosdaq: dict) -> str:
+    return f"오늘 시장은 코스피 {kospi['direction']}, 코스닥 {kosdaq['direction']} 흐름을 보였습니다."
+
+
 def build_raw_summary() -> dict:
     now = now_kst()
     stage = market_stage(now)
     meta = stage_meta(stage)
+
+    print("FINAL STAGE:", stage)
+    print("FINAL MARKET TYPE:", meta["market_type"])
 
     kospi = get_index_change("KS11", "코스피")
     kosdaq = get_index_change("KQ11", "코스닥")
@@ -819,11 +856,11 @@ def build_raw_summary() -> dict:
     flow_summary = get_flow_summary(kospi["change_pct"], kosdaq["change_pct"], fx)
 
     if stage == "pre_open":
-        one_line = meta["one_line"]
+        one_line = build_preopen_one_line(kospi, kosdaq, fx)
     elif stage == "intraday":
-        one_line = f"오전 기준 코스피는 {kospi['direction']}, 코스닥은 {kosdaq['direction']} 흐름입니다."
+        one_line = build_morning_one_line(kospi, kosdaq)
     else:
-        one_line = f"오늘 시장은 코스피 {kospi['direction']}, 코스닥 {kosdaq['direction']} 흐름을 보였습니다."
+        one_line = build_close_one_line(kospi, kosdaq)
 
     raw = {
         "summary_date": str(date.today()),
@@ -840,7 +877,6 @@ def build_raw_summary() -> dict:
         "sector_scores": sector_scores,
         "check_label": meta["check_label"],
         "wp_keyword": meta["wp_keyword"],
-        "fallback_post_title": meta["fallback_post_title"],
     }
 
     raw["news_items"] = generate_news_items(raw)
@@ -856,23 +892,10 @@ def main():
     post_title = ""
     post_url = ""
 
+    # 마감만 워드프레스 발행
     if raw["market_type"] == "kr_stock_close":
         wp_title, wp_excerpt, wp_content, wp_slug = build_wordpress_article(raw)
         post_title, post_url = publish_to_wordpress(wp_title, wp_excerpt, wp_content, wp_slug)
-    else:
-        last_close_title, last_close_url = fetch_latest_close_post_meta()
-        post_title = raw["fallback_post_title"]
-        post_url = last_close_url
-
-        if not post_url:
-            post_title = raw["title"]
-            post_url = ""
-
-        if last_close_title and raw["market_type"] == "kr_stock_morning":
-            post_title = "📘 최근 장마감 분석 보기"
-
-        if last_close_title and raw["market_type"] == "kr_stock_preopen":
-            post_title = "📘 어제 장마감 분석 보기"
 
     row = {
         "summary_date": raw["summary_date"],
