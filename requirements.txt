@@ -1,9 +1,10 @@
 fastapi
 uvicorn
-supabase
 gunicorn
+supabase
 requests
 finance-datareader
+yfinance
 pandas
 pykrx
 openai
