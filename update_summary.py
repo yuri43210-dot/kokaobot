@@ -2,7 +2,7 @@ import os
 import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple
 
 import requests
 import yfinance as yf
@@ -17,7 +17,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
-WP_URL = os.getenv("WP_URL", "").strip()  # 예: https://example.com
+# WP_URL 우선, 없으면 WP_SITE_URL 사용
+WP_URL = os.getenv("WP_URL", os.getenv("WP_SITE_URL", "")).strip()
 WP_USERNAME = os.getenv("WP_USERNAME", "").strip()
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "").strip()
 
@@ -105,7 +106,7 @@ def get_ticker_snapshot(ticker: str, name: str) -> Dict[str, Any]:
         }
 
 def collect_market_data() -> Dict[str, Any]:
-    data = {
+    return {
         "date_kst": today_str(),
         "collected_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
         "us_markets": {
@@ -121,7 +122,6 @@ def collect_market_data() -> Dict[str, Any]:
             "usdkrw": get_ticker_snapshot("KRW=X", "USD/KRW"),
         },
     }
-    return data
 
 # =========================
 # 프롬프트
@@ -163,10 +163,6 @@ def build_system_prompt(stage: str) -> str:
 - strong_sectors / weak_sectors는 "관심 업종" 또는 "주의 업종" 느낌으로 작성
 - tomorrow_points에는 "오늘 장에서 체크할 변수"를 작성
 - full_text는 반드시 "밤사이 미국 증시와 환율 흐름이 오늘 한국장에 어떤 영향을 줄지" 중심으로 작성
-
-절대 금지:
-- 오전 장중 흐름처럼 쓰지 말 것
-- 마감 총평처럼 쓰지 말 것
 """
 
     if stage == "intraday":
@@ -180,10 +176,6 @@ def build_system_prompt(stage: str) -> str:
 - 마감 총평처럼 하루 전체 결론으로 쓰지 말 것
 - tomorrow_points에는 "오후장 체크 포인트"를 작성
 - full_text는 반드시 "오전 장세 해설"이어야 함
-
-절대 금지:
-- 밤사이 변수만 길게 쓰기
-- 장 마감 결론처럼 쓰기
 """
 
     if stage == "close":
@@ -195,11 +187,7 @@ def build_system_prompt(stage: str) -> str:
 - 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
 - tomorrow_points에는 "내일 체크 포인트"를 작성
 - full_text는 "오늘 시장을 한 번에 정리하는 마감 브리핑"이어야 함
-- post_title은 워드프레스 발행용 제목이므로 클릭 가능한 자연스러운 한국어 제목으로 작성
-
-절대 금지:
-- 개장 전 브리핑처럼 밤사이 변수 중심으로만 쓰기
-- 오전 시황처럼 미완성 장세 느낌으로 쓰기
+- post_title은 워드프레스 발행용 제목이므로 자연스럽고 클릭 가능한 제목으로 작성
 """
 
     raise ValueError(f"Unknown stage: {stage}")
@@ -329,7 +317,7 @@ def upsert_summary(row: Dict[str, Any]) -> None:
 # WordPress 발행
 # =========================
 def build_wp_html(summary: Dict[str, Any]) -> str:
-    full_text_html = summary.get("full_text", "").replace("\n", "<br>")
+    full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
 
     return f"""
 <h2>{summary.get('one_line', '')}</h2>
@@ -351,10 +339,13 @@ def build_wp_html(summary: Dict[str, Any]) -> str:
 <p>{summary.get('tomorrow_points', '')}</p>
 """.strip()
 
-def publish_wordpress(summary: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    if not (WP_URL and WP_USERNAME and WP_APP_PASSWORD):
-        print("[publish_wordpress] WP 환경변수가 없어 발행 생략")
-        return None, None
+def publish_wordpress(summary: Dict[str, Any]) -> Tuple[str, str]:
+    if not WP_URL:
+        raise RuntimeError("WP_URL/WP_SITE_URL이 비어 있습니다.")
+    if not WP_USERNAME:
+        raise RuntimeError("WP_USERNAME이 비어 있습니다.")
+    if not WP_APP_PASSWORD:
+        raise RuntimeError("WP_APP_PASSWORD가 비어 있습니다.")
 
     endpoint = f"{WP_URL.rstrip('/')}/wp-json/wp/v2/posts"
     auth = (WP_USERNAME, WP_APP_PASSWORD)
@@ -365,24 +356,30 @@ def publish_wordpress(summary: Dict[str, Any]) -> Tuple[Optional[str], Optional[
         "status": "publish",
     }
 
-    try:
-        res = requests.post(endpoint, auth=auth, json=payload, timeout=30)
-        print("[publish_wordpress] status:", res.status_code)
-        res.raise_for_status()
+    print("[publish_wordpress] endpoint:", endpoint)
+    print("[publish_wordpress] title:", summary["post_title"])
 
-        data = res.json()
-        wp_title = data.get("title", {}).get("rendered") if isinstance(data.get("title"), dict) else summary["post_title"]
-        wp_link = data.get("link")
+    res = requests.post(endpoint, auth=auth, json=payload, timeout=30)
 
-        return wp_title, wp_link
+    print("[publish_wordpress] status:", res.status_code)
+    print("[publish_wordpress] response text:", res.text[:1000])
 
-    except Exception as e:
-        print(f"[publish_wordpress] error: {e}")
-        try:
-            print("[publish_wordpress] response text:", res.text)
-        except Exception:
-            pass
-        return None, None
+    res.raise_for_status()
+    data = res.json()
+
+    wp_title = (
+        data.get("title", {}).get("rendered")
+        if isinstance(data.get("title"), dict)
+        else summary["post_title"]
+    )
+
+    wp_link = data.get("link") or ""
+
+    if not wp_link:
+        raise RuntimeError("워드프레스 응답에 link가 없습니다.")
+
+    print("[publish_wordpress] success link:", wp_link)
+    return wp_title or summary["post_title"], wp_link
 
 # =========================
 # 메인
@@ -398,12 +395,13 @@ def main():
     print("[summary]")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    post_title = None
-    post_url = None
+    post_title = summary.get("post_title", "")
+    post_url = ""
 
-    # 마감 시황만 워드프레스 발행
     if FORCE_STAGE == "close":
-        post_title, post_url = publish_wordpress(summary)
+        wp_title, wp_link = publish_wordpress(summary)
+        post_title = wp_title
+        post_url = wp_link
 
     row = {
         "summary_date": today_str(),
@@ -415,8 +413,8 @@ def main():
         "weak_sectors": summary.get("weak_sectors", ""),
         "tomorrow_points": summary.get("tomorrow_points", ""),
         "full_text": summary.get("full_text", ""),
-        "post_title": summary.get("post_title", "") if FORCE_STAGE != "close" else (post_title or summary.get("post_title", "")),
-        "post_url": post_url or "",
+        "post_title": post_title,
+        "post_url": post_url,
         "updated_at": now_kst().isoformat(),
     }
 
