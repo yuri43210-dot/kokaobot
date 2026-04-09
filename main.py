@@ -1,4 +1,7 @@
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -10,6 +13,16 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
 DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://moneycalc.wikitreee.com").strip()
 
 TABLE_NAME = "market_summaries"
+KST = ZoneInfo("Asia/Seoul")
+
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
+
+
+def current_hhmm() -> int:
+    now = now_kst()
+    return now.hour * 100 + now.minute
 
 
 def get_common_quick_replies() -> list:
@@ -136,7 +149,7 @@ def fetch_latest_summary(market_type: str) -> dict | None:
         f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
         f"?select=*"
         f"&market_type=eq.{market_type}"
-        f"&order=summary_date.desc"
+        f"&order=summary_date.desc,created_at.desc"
         f"&limit=1"
     )
 
@@ -183,6 +196,10 @@ def build_outputs_from_row(latest: dict) -> list:
     post_url = (latest.get("post_url") or "").strip()
     post_title = (latest.get("post_title") or "").strip()
 
+    # 개장 전/오전은 카드 숨김
+    if market_type in ["kr_stock_preopen", "kr_stock_morning"]:
+        return outputs
+
     if not post_url:
         return outputs
 
@@ -206,8 +223,30 @@ def build_outputs_from_row(latest: dict) -> list:
     return outputs
 
 
+def should_block_market_view(market_type: str) -> tuple[bool, str]:
+    hhmm = current_hhmm()
+
+    if market_type == "kr_stock_morning" and hhmm < 1300:
+        return True, "오전 시황은 13시에 정리됩니다. 장 초반 흐름이 더 확인된 뒤 업데이트됩니다."
+
+    if market_type == "kr_stock_close" and hhmm < 1530:
+        return True, "아직 한국장이 마감되지 않았습니다. 장 마감 후 마감 시황이 정리됩니다."
+
+    return False, ""
+
+
 def kakao_response_from_row(latest: dict | None, market_type: str) -> JSONResponse:
     ui_meta = get_market_ui_meta(market_type)
+
+    blocked, block_message = should_block_market_view(market_type)
+    if blocked:
+        return build_kakao_response([
+            {
+                "simpleText": {
+                    "text": block_message
+                }
+            }
+        ])
 
     if not latest:
         return build_kakao_response([
@@ -299,18 +338,19 @@ async def market_close():
 @app.post("/kakao/market-summary")
 async def market_summary():
     try:
-        latest = fetch_latest_summary("kr_stock_close")
-        current_type = "kr_stock_close"
+        hhmm = current_hhmm()
 
-        if not latest:
-            latest = fetch_latest_summary("kr_stock_morning")
-            current_type = "kr_stock_morning"
-
-        if not latest:
+        if hhmm < 1300:
             latest = fetch_latest_summary("kr_stock_preopen")
-            current_type = "kr_stock_preopen"
+            return kakao_response_from_row(latest, "kr_stock_preopen")
 
-        return kakao_response_from_row(latest, current_type)
+        if hhmm < 1530:
+            latest = fetch_latest_summary("kr_stock_morning")
+            return kakao_response_from_row(latest, "kr_stock_morning")
+
+        latest = fetch_latest_summary("kr_stock_close")
+        return kakao_response_from_row(latest, "kr_stock_close")
+
     except Exception as e:
         print("market_summary error:", repr(e))
 
