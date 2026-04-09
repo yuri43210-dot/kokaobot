@@ -1,380 +1,274 @@
 import os
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
+from typing import Optional, Dict, Any, List
 
-import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from supabase import create_client, Client
+
+# =========================
+# 환경변수
+# =========================
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL / SUPABASE_KEY 환경변수가 필요합니다.")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
-
-SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
-SUPABASE_KEY = os.environ["SUPABASE_KEY"].strip()
-DEFAULT_BLOG_URL = os.environ.get("DEFAULT_BLOG_URL", "https://moneycalc.wikitreee.com").strip()
-
-TABLE_NAME = "market_summaries"
 KST = ZoneInfo("Asia/Seoul")
 
+# =========================
+# 공통 quick replies
+# =========================
+QUICK_REPLIES = [
+    {
+        "label": "🔒 개장 전",
+        "action": "message",
+        "messageText": "개장 전"
+    },
+    {
+        "label": "📈 오전 시황",
+        "action": "message",
+        "messageText": "오전 시황"
+    },
+    {
+        "label": "🌙 장 마감",
+        "action": "message",
+        "messageText": "장 마감"
+    },
+    {
+        "label": "🌍 글로벌",
+        "action": "message",
+        "messageText": "글로벌"
+    },
+]
 
+# =========================
+# 텍스트 정책
+# =========================
+MORNING_BLOCK_TEXT = "오전 시황은 13시에 정리됩니다. 장 초반 흐름이 더 확인된 뒤 업데이트됩니다."
+CLOSE_BLOCK_TEXT = "아직 한국장이 마감되지 않았습니다. 장 마감 후 마감 시황이 정리됩니다."
+
+PREOPEN_EMPTY_TEXT = "오늘 개장 전 시황 데이터가 아직 준비되지 않았습니다. 잠시 후 다시 확인해 주세요."
+MORNING_EMPTY_TEXT = "오늘 오전 시황 데이터가 아직 준비되지 않았습니다. 잠시 후 다시 확인해 주세요."
+CLOSE_EMPTY_TEXT = "오늘 마감 시황 데이터가 아직 준비되지 않았습니다. 잠시 후 다시 확인해 주세요."
+GLOBAL_TEXT = "글로벌 브리핑은 별도 기능으로 연결 예정입니다."
+
+# =========================
+# 유틸
+# =========================
 def now_kst() -> datetime:
     return datetime.now(KST)
 
+def today_kst() -> date:
+    return now_kst().date()
 
-def current_hhmm() -> int:
-    now = now_kst()
-    return now.hour * 100 + now.minute
+def format_date_kr(d: date) -> str:
+    return d.strftime("%Y-%m-%d")
 
+def is_after_13(now_dt: datetime) -> bool:
+    return (now_dt.hour, now_dt.minute) >= (13, 0)
 
-def get_common_quick_replies() -> list:
-    return [
-        {
-            "label": "🔒 개장 전",
-            "action": "message",
-            "messageText": "개장 전"
-        },
-        {
-            "label": "📈 오전 시황",
-            "action": "message",
-            "messageText": "오전 시황"
-        },
-        {
-            "label": "🌙 장 마감",
-            "action": "message",
-            "messageText": "마감"
-        },
-        {
-            "label": "🌍 글로벌",
-            "action": "message",
-            "messageText": "글로벌"
-        }
-    ]
+def is_after_1530(now_dt: datetime) -> bool:
+    return (now_dt.hour, now_dt.minute) >= (15, 30)
 
+def detect_user_command(user_text: str) -> str:
+    text = (user_text or "").strip()
 
-def build_kakao_response(outputs: list, quick_replies: list | None = None) -> JSONResponse:
-    payload = {
-        "version": "2.0",
-        "template": {
-            "outputs": outputs,
-            "quickReplies": quick_replies or get_common_quick_replies()
-        }
-    }
-    return JSONResponse(payload)
+    if "개장 전" in text or "개장전" in text:
+        return "preopen"
+    if "오전" in text:
+        return "morning"
+    if "마감" in text or "장 마감" in text or "장마감" in text:
+        return "close"
+    if "글로벌" in text or "미국장" in text:
+        return "global"
 
+    # 기본값
+    return "preopen"
 
-def get_market_ui_meta(market_type: str) -> dict:
+def get_market_type(stage: str) -> Optional[str]:
     mapping = {
-        "kr_stock_preopen": {
-            "header_title": "📌 [오늘의 개장 전 체크]",
-            "button_label": "오늘 장마감 분석 보기",
-            "fallback_empty": "개장 전 시황은 장 시작 전 정리됩니다. 밤사이 글로벌 변수와 미국장 흐름을 반영해 업데이트됩니다.",
-        },
-        "kr_stock_morning": {
-            "header_title": "📌 [오늘의 오전 시황]",
-            "button_label": "오늘 장마감 분석 보기",
-            "fallback_empty": "오전 시황은 13시에 정리됩니다. 장 초반 흐름이 더 확인된 뒤 업데이트됩니다.",
-        },
-        "kr_stock_close": {
-            "header_title": "📌 [오늘의 장마감 요약]",
-            "button_label": "오늘 장마감 분석 보기",
-            "fallback_empty": "아직 한국장이 마감되지 않았습니다. 장 마감 후 마감 시황이 정리됩니다.",
-        },
+        "preopen": "kr_stock_preopen",
+        "morning": "kr_stock_morning",
+        "close": "kr_stock_close",
     }
-    return mapping.get(
-        market_type,
-        {
-            "header_title": "📌 [오늘의 시장 체크]",
-            "button_label": "최신 분석글 바로가기",
-            "fallback_empty": "시장 요약 데이터가 아직 없습니다.",
-        },
-    )
+    return mapping.get(stage)
 
-
-def build_summary_text(latest: dict) -> str:
-    full_text = (latest.get("full_text") or "").strip()
-    if full_text:
-        return full_text
-
-    one_line = (latest.get("one_line") or "").strip()
-    kospi_text = (latest.get("kospi_text") or "").strip()
-    kosdaq_text = (latest.get("kosdaq_text") or "").strip()
-    strong_sectors = (latest.get("strong_sectors") or "").strip()
-    weak_sectors = (latest.get("weak_sectors") or "").strip()
-    tomorrow_points = (latest.get("tomorrow_points") or "").strip()
-    market_type = (latest.get("market_type") or "").strip()
-
-    ui_meta = get_market_ui_meta(market_type)
-    parts = [ui_meta["header_title"]]
-
-    if one_line:
-        parts.append(f"\n☀ 오늘의 한줄\n{one_line}")
-
-    if kospi_text or kosdaq_text:
-        section = ["\n📊 지수 흐름"]
-        if kospi_text:
-            section.append(f"- {kospi_text}")
-        if kosdaq_text:
-            section.append(f"- {kosdaq_text}")
-        parts.append("\n".join(section))
-
-    if strong_sectors:
-        strong_lines = [x.strip() for x in strong_sectors.split(",") if x.strip()]
-        if strong_lines:
-            section = ["\n🔥 강한 섹터"]
-            for item in strong_lines:
-                section.append(f"- {item}")
-            parts.append("\n".join(section))
-
-    if weak_sectors:
-        weak_lines = [x.strip() for x in weak_sectors.split(",") if x.strip()]
-        if weak_lines:
-            section = ["\n🍂 약한 섹터"]
-            for item in weak_lines:
-                section.append(f"- {item}")
-            parts.append("\n".join(section))
-
-    if tomorrow_points:
-        point_lines = [x.strip() for x in tomorrow_points.split("/") if x.strip()]
-        if point_lines:
-            section = ["\n🎯 체크 포인트"]
-            for item in point_lines:
-                section.append(f"- {item}")
-            parts.append("\n".join(section))
-
-    result = "\n".join(parts).strip()
-    return result or "오늘 시장 요약 데이터가 비어 있습니다."
-
-
-def fetch_latest_summary(market_type: str) -> dict | None:
-    url = (
-        f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
-        f"?select=*"
-        f"&market_type=eq.{market_type}"
-        f"&order=summary_date.desc,created_at.desc"
-        f"&limit=1"
-    )
-
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    response = requests.get(url, headers=headers, timeout=20)
-
-    print("REQUEST URL:", url)
-    print("STATUS:", response.status_code)
-    print("RESPONSE TEXT:", response.text[:1000])
-
-    response.raise_for_status()
-    data = response.json()
-
-    if not isinstance(data, list):
-        raise Exception(f"Supabase response is not a list: {data}")
-
-    if len(data) == 0:
+def fetch_summary(summary_date: str, market_type: str) -> Optional[Dict[str, Any]]:
+    try:
+        result = (
+            supabase.table("market_summaries")
+            .select("*")
+            .eq("summary_date", summary_date)
+            .eq("market_type", market_type)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        if not rows:
+            return None
+        return rows[0]
+    except Exception as e:
+        print(f"[fetch_summary] error: {e}")
         return None
 
-    return data[0]
-
-
-def build_outputs_from_row(latest: dict) -> list:
-    text = build_summary_text(latest)
-    market_type = (latest.get("market_type") or "").strip()
-    ui_meta = get_market_ui_meta(market_type)
-
-    if len(text) > 950:
-        text = text[:950].rstrip() + "\n\n👉 아래 버튼에서 전체 분석을 확인하세요."
-
-    outputs = [
-        {
-            "simpleText": {
-                "text": text
-            }
-        }
-    ]
-
-    post_url = (latest.get("post_url") or "").strip()
-    post_title = (latest.get("post_title") or "").strip()
-
-    # 개장 전/오전은 카드 숨김
-    if market_type in ["kr_stock_preopen", "kr_stock_morning"]:
-        return outputs
-
-    if not post_url:
-        return outputs
-
-    card_title = post_title or ui_meta["header_title"].replace("📌 ", "")
-    button_label = ui_meta["button_label"]
-
-    outputs.append({
-        "basicCard": {
-            "title": card_title,
-            "description": "시장 흐름을 더 자세히 확인할 수 있습니다.",
-            "buttons": [
+def make_simple_text_response(text: str) -> Dict[str, Any]:
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [
                 {
-                    "action": "webLink",
-                    "label": button_label,
-                    "webLinkUrl": post_url
+                    "simpleText": {
+                        "text": text
+                    }
                 }
-            ]
+            ],
+            "quickReplies": QUICK_REPLIES
         }
-    })
+    }
 
-    return outputs
+def join_nonempty(lines: List[str]) -> str:
+    return "\n".join([x for x in lines if x and str(x).strip()])
 
+def build_preopen_text(row: Dict[str, Any]) -> str:
+    lines = [
+        "🔒 오늘의 개장 전 브리핑",
+        "",
+        row.get("one_line", ""),
+        "",
+        "📌 밤사이 체크 포인트",
+        row.get("full_text", ""),
+        "",
+        f"💵 환율/해외 변수: {row.get('tomorrow_points', '')}".strip(),
+    ]
+    return join_nonempty(lines)
 
-def should_block_market_view(market_type: str) -> tuple[bool, str]:
-    hhmm = current_hhmm()
+def build_morning_text(row: Dict[str, Any]) -> str:
+    lines = [
+        "📈 오전 시황",
+        "",
+        row.get("one_line", ""),
+        "",
+        f"코스피: {row.get('kospi_text', '')}",
+        f"코스닥: {row.get('kosdaq_text', '')}",
+        "",
+        f"강한 업종: {row.get('strong_sectors', '')}",
+        f"약한 업종: {row.get('weak_sectors', '')}",
+        "",
+        row.get("full_text", ""),
+    ]
+    return join_nonempty(lines)
 
-    if market_type == "kr_stock_morning" and hhmm < 1300:
-        return True, "오전 시황은 13시에 정리됩니다. 장 초반 흐름이 더 확인된 뒤 업데이트됩니다."
+def build_close_text(row: Dict[str, Any]) -> str:
+    lines = [
+        "🌙 장 마감 시황",
+        "",
+        row.get("one_line", ""),
+        "",
+        f"코스피: {row.get('kospi_text', '')}",
+        f"코스닥: {row.get('kosdaq_text', '')}",
+        "",
+        f"강한 업종: {row.get('strong_sectors', '')}",
+        f"약한 업종: {row.get('weak_sectors', '')}",
+        "",
+        "📝 내일 체크 포인트",
+        row.get("tomorrow_points", ""),
+        "",
+        row.get("full_text", ""),
+    ]
+    if row.get("post_url"):
+        lines += ["", f"🔗 자세히 보기: {row.get('post_url')}"]
+    return join_nonempty(lines)
 
-    if market_type == "kr_stock_close" and hhmm < 1530:
-        return True, "아직 한국장이 마감되지 않았습니다. 장 마감 후 마감 시황이 정리됩니다."
+def build_stage_response(stage: str) -> Dict[str, Any]:
+    now_dt = now_kst()
+    today_str = format_date_kr(today_kst())
 
-    return False, ""
+    if stage == "global":
+        return make_simple_text_response(GLOBAL_TEXT)
 
+    if stage == "morning" and not is_after_13(now_dt):
+        return make_simple_text_response(MORNING_BLOCK_TEXT)
 
-def kakao_response_from_row(latest: dict | None, market_type: str) -> JSONResponse:
-    ui_meta = get_market_ui_meta(market_type)
+    if stage == "close" and not is_after_1530(now_dt):
+        return make_simple_text_response(CLOSE_BLOCK_TEXT)
 
-    blocked, block_message = should_block_market_view(market_type)
-    if blocked:
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": block_message
-                }
-            }
-        ])
+    market_type = get_market_type(stage)
+    if not market_type:
+        return make_simple_text_response("요청을 이해하지 못했습니다.")
 
-    if not latest:
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": ui_meta["fallback_empty"]
-                }
-            }
-        ])
+    row = fetch_summary(today_str, market_type)
 
-    outputs = build_outputs_from_row(latest)
-    return build_kakao_response(outputs)
+    if not row:
+        if stage == "preopen":
+            return make_simple_text_response(PREOPEN_EMPTY_TEXT)
+        if stage == "morning":
+            return make_simple_text_response(MORNING_EMPTY_TEXT)
+        if stage == "close":
+            return make_simple_text_response(CLOSE_EMPTY_TEXT)
 
+    if stage == "preopen":
+        return make_simple_text_response(build_preopen_text(row))
+    if stage == "morning":
+        return make_simple_text_response(build_morning_text(row))
+    if stage == "close":
+        return make_simple_text_response(build_close_text(row))
 
+    return make_simple_text_response("요청을 처리하지 못했습니다.")
+
+# =========================
+# 헬스체크
+# =========================
 @app.get("/")
-async def root():
-    return {"message": "root ok"}
+def root():
+    return {
+        "ok": True,
+        "message": "Kakao market skill server is running",
+        "time_kst": now_kst().isoformat()
+    }
 
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "time_kst": now_kst().isoformat()
+    }
 
-@app.get("/ping")
-async def ping():
-    return {"message": "pong"}
-
-
-@app.get("/webhook")
-async def webhook_check():
-    return {"message": "webhook route exists"}
-
-
-@app.post("/webhook")
-async def webhook_post():
-    return build_kakao_response([
-        {
-            "simpleText": {
-                "text": "웹훅 응답 정상입니다."
-            }
-        }
-    ])
-
-
-@app.post("/kakao/market-preopen")
-async def market_preopen():
+# =========================
+# 카카오 스킬
+# =========================
+@app.post("/kakao/skill")
+async def kakao_skill(request: Request):
     try:
-        latest = fetch_latest_summary("kr_stock_preopen")
-        return kakao_response_from_row(latest, "kr_stock_preopen")
-    except Exception as e:
-        print("market_preopen error:", repr(e))
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": "개장 전 시황을 불러오는 중 문제가 발생했습니다."
-                }
-            }
-        ])
+        body = await request.json()
+        print("[kakao_skill] request body:", body)
 
+        user_text = (
+            body.get("userRequest", {})
+            .get("utterance", "")
+        )
 
-@app.post("/kakao/market-morning")
-async def market_morning():
-    try:
-        latest = fetch_latest_summary("kr_stock_morning")
-        return kakao_response_from_row(latest, "kr_stock_morning")
-    except Exception as e:
-        print("market_morning error:", repr(e))
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": "오전 시황을 불러오는 중 문제가 발생했습니다."
-                }
-            }
-        ])
-
-
-@app.post("/kakao/market-close")
-async def market_close():
-    try:
-        latest = fetch_latest_summary("kr_stock_close")
-        return kakao_response_from_row(latest, "kr_stock_close")
-    except Exception as e:
-        print("market_close error:", repr(e))
-        return build_kakao_response([
-            {
-                "simpleText": {
-                    "text": "장마감 시황을 불러오는 중 문제가 발생했습니다."
-                }
-            }
-        ])
-
-
-@app.post("/kakao/market-summary")
-async def market_summary():
-    try:
-        hhmm = current_hhmm()
-
-        if hhmm < 1300:
-            latest = fetch_latest_summary("kr_stock_preopen")
-            return kakao_response_from_row(latest, "kr_stock_preopen")
-
-        if hhmm < 1530:
-            latest = fetch_latest_summary("kr_stock_morning")
-            return kakao_response_from_row(latest, "kr_stock_morning")
-
-        latest = fetch_latest_summary("kr_stock_close")
-        return kakao_response_from_row(latest, "kr_stock_close")
+        stage = detect_user_command(user_text)
+        response = build_stage_response(stage)
+        return JSONResponse(content=response)
 
     except Exception as e:
-        print("market_summary error:", repr(e))
+        print(f"[kakao_skill] error: {e}")
+        return JSONResponse(
+            content=make_simple_text_response(
+                "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+            )
+        )
 
-        fallback_outputs = [
-            {
-                "simpleText": {
-                    "text": "시장 요약을 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
-                }
-            }
-        ]
-
-        if DEFAULT_BLOG_URL:
-            fallback_outputs.append({
-                "basicCard": {
-                    "title": "📊 최신 분석글 보기",
-                    "description": "시장 분석 페이지로 바로 이동할 수 있습니다.",
-                    "buttons": [
-                        {
-                            "action": "webLink",
-                            "label": "최신 분석글 바로가기",
-                            "webLinkUrl": DEFAULT_BLOG_URL
-                        }
-                    ]
-                }
-            })
-
-        return build_kakao_response(fallback_outputs)
+# =========================
+# 테스트용 직접 호출
+# =========================
+@app.get("/test")
+def test(stage: str = "preopen"):
+    return build_stage_response(stage)
