@@ -27,7 +27,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      WP_URL: ${{ secrets.WP_URL }}
+      WP_URL: ${{ secrets.WP_SITE_URL }}
+      WP_SITE_URL: ${{ secrets.WP_SITE_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
     steps:
@@ -55,7 +56,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      WP_URL: ${{ secrets.WP_URL }}
+      WP_URL: ${{ secrets.WP_SITE_URL }}
+      WP_SITE_URL: ${{ secrets.WP_SITE_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
     steps:
@@ -83,7 +85,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      WP_URL: ${{ secrets.WP_URL }}
+      WP_URL: ${{ secrets.WP_SITE_URL }}
+      WP_SITE_URL: ${{ secrets.WP_SITE_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
     steps:
@@ -111,7 +114,8 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      WP_URL: ${{ secrets.WP_URL }}
+      WP_URL: ${{ secrets.WP_SITE_URL }}
+      WP_SITE_URL: ${{ secrets.WP_SITE_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
     steps:
