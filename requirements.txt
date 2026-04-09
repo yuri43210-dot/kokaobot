@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+supabase
 gunicorn
 requests
 finance-datareader
