@@ -2,22 +2,8 @@ name: Update Market Summaries
 
 on:
   schedule:
-    # =========================
-    # 개장 전 (06:00 KST)
-    # UTC 기준: 21:00 (전날)
-    # =========================
     - cron: "0 21 * * 0-4"
-
-    # =========================
-    # 오전 시황 (12:00 KST)
-    # UTC 기준: 03:00
-    # =========================
     - cron: "0 3 * * 1-5"
-
-    # =========================
-    # 마감 시황 (15:40 KST)
-    # UTC 기준: 06:40
-    # =========================
     - cron: "40 6 * * 1-5"
 
   workflow_dispatch:
@@ -26,11 +12,13 @@ on:
         description: "pre_open / intraday / close"
         required: true
         default: "pre_open"
+        type: choice
+        options:
+          - pre_open
+          - intraday
+          - close
 
 jobs:
-  # =========================
-  # 개장 전
-  # =========================
   preopen:
     if: github.event_name == 'schedule' && github.event.schedule == '0 21 * * 0-4'
     runs-on: ubuntu-latest
@@ -42,7 +30,6 @@ jobs:
       WP_URL: ${{ secrets.WP_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,9 +47,6 @@ jobs:
       - name: Run pre-open summary
         run: python update_summary.py
 
-  # =========================
-  # 오전 시황
-  # =========================
   morning:
     if: github.event_name == 'schedule' && github.event.schedule == '0 3 * * 1-5'
     runs-on: ubuntu-latest
@@ -74,7 +58,6 @@ jobs:
       WP_URL: ${{ secrets.WP_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,9 +75,6 @@ jobs:
       - name: Run morning summary
         run: python update_summary.py
 
-  # =========================
-  # 마감 시황
-  # =========================
   close:
     if: github.event_name == 'schedule' && github.event.schedule == '40 6 * * 1-5'
     runs-on: ubuntu-latest
@@ -106,7 +86,6 @@ jobs:
       WP_URL: ${{ secrets.WP_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -124,9 +103,6 @@ jobs:
       - name: Run close summary
         run: python update_summary.py
 
-  # =========================
-  # 수동 실행
-  # =========================
   manual-run:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -138,7 +114,6 @@ jobs:
       WP_URL: ${{ secrets.WP_URL }}
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -149,11 +124,18 @@ jobs:
           python-version: "3.11"
 
       - name: Validate force_stage
+        shell: bash
         run: |
-          if [ "$FORCE_STAGE" != "pre_open" ] && [ "$FORCE_STAGE" != "intraday" ] && [ "$FORCE_STAGE" != "close" ]; then
-            echo "Invalid FORCE_STAGE: $FORCE_STAGE"
+          FORCE_STAGE_CLEAN="$(echo "$FORCE_STAGE" | tr -d '\r' | xargs)"
+          echo "FORCE_STAGE(raw)=[$FORCE_STAGE]"
+          echo "FORCE_STAGE(clean)=[$FORCE_STAGE_CLEAN]"
+
+          if [ "$FORCE_STAGE_CLEAN" != "pre_open" ] && [ "$FORCE_STAGE_CLEAN" != "intraday" ] && [ "$FORCE_STAGE_CLEAN" != "close" ]; then
+            echo "Invalid FORCE_STAGE: $FORCE_STAGE_CLEAN"
             exit 1
           fi
+
+          echo "FORCE_STAGE=$FORCE_STAGE_CLEAN" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: |
