@@ -58,16 +58,34 @@ def now_kst() -> datetime:
 def today_str() -> str:
     return now_kst().strftime("%Y-%m-%d")
 
+def safe_float(v, default=0.0):
+    try:
+        if v is None:
+            return default
+        return float(v)
+    except Exception:
+        return default
+
 def get_ticker_snapshot(ticker: str, name: str) -> Dict[str, Any]:
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period="5d", interval="1d", auto_adjust=False)
-        if hist.empty:
-            return {"name": name, "ticker": ticker, "error": "no_data"}
+
+        if hist is None or hist.empty:
+            return {
+                "name": name,
+                "ticker": ticker,
+                "error": "no_data"
+            }
 
         last = hist.iloc[-1]
-        close = float(last["Close"])
-        prev_close = float(hist.iloc[-2]["Close"]) if len(hist) >= 2 else close
+        close = safe_float(last.get("Close"))
+
+        if len(hist) >= 2:
+            prev_close = safe_float(hist.iloc[-2].get("Close"), close)
+        else:
+            prev_close = close
+
         change = close - prev_close
         pct = (change / prev_close * 100.0) if prev_close else 0.0
 
@@ -105,6 +123,9 @@ def collect_market_data() -> Dict[str, Any]:
     }
     return data
 
+# =========================
+# 프롬프트
+# =========================
 def build_system_prompt(stage: str) -> str:
     common = """
 너는 한국 주식시장 시황 전문 에디터다.
@@ -181,7 +202,7 @@ def build_system_prompt(stage: str) -> str:
 - 오전 시황처럼 미완성 장세 느낌으로 쓰기
 """
 
-    raise ValueError("Unknown stage")
+    raise ValueError(f"Unknown stage: {stage}")
 
 def build_user_prompt(stage: str, market_data: Dict[str, Any]) -> str:
     return f"""
@@ -206,24 +227,49 @@ def build_user_prompt(stage: str, market_data: Dict[str, Any]) -> str:
 }}
 """
 
+# =========================
+# OpenAI 호출
+# =========================
+def extract_json_text(content) -> str:
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "output_text" and item.get("text"):
+                    parts.append(item["text"])
+                elif item.get("text"):
+                    parts.append(str(item["text"]))
+            else:
+                parts.append(str(item))
+        return "".join(parts).strip()
+
+    return str(content).strip()
+
 def generate_summary(stage: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
     system_prompt = build_system_prompt(stage)
     user_prompt = build_user_prompt(stage, market_data)
 
     resp = client.chat.completions.create(
         model="gpt-5",
-        temperature=0.5,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
     )
 
-    content = resp.choices[0].message.content.strip()
+    raw_content = resp.choices[0].message.content
+    content = extract_json_text(raw_content)
 
     try:
         result = json.loads(content)
     except Exception:
+        print("[generate_summary] JSON parse failed")
         print("[generate_summary] raw content:", content)
         raise RuntimeError("모델 응답이 JSON이 아닙니다.")
 
@@ -237,15 +283,18 @@ def generate_summary(stage: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
         "full_text",
         "post_title",
     ]
+
     for k in required_keys:
         if k not in result:
             raise RuntimeError(f"응답 JSON에 {k} 키가 없습니다.")
 
     return result
 
+# =========================
+# Supabase 저장
+# =========================
 def upsert_summary(row: Dict[str, Any]) -> None:
     try:
-        # summary_date + market_type 기준 1건 유지
         existing = (
             supabase.table("market_summaries")
             .select("id")
@@ -276,26 +325,31 @@ def upsert_summary(row: Dict[str, Any]) -> None:
     except Exception as e:
         raise RuntimeError(f"Supabase 저장 실패: {e}")
 
+# =========================
+# WordPress 발행
+# =========================
 def build_wp_html(summary: Dict[str, Any]) -> str:
+    full_text_html = summary.get("full_text", "").replace("\n", "<br>")
+
     return f"""
-    <h2>{summary.get('one_line', '')}</h2>
-    <p>{summary.get('full_text', '').replace(chr(10), '<br>')}</p>
+<h2>{summary.get('one_line', '')}</h2>
+<p>{full_text_html}</p>
 
-    <h3>코스피</h3>
-    <p>{summary.get('kospi_text', '')}</p>
+<h3>코스피</h3>
+<p>{summary.get('kospi_text', '')}</p>
 
-    <h3>코스닥</h3>
-    <p>{summary.get('kosdaq_text', '')}</p>
+<h3>코스닥</h3>
+<p>{summary.get('kosdaq_text', '')}</p>
 
-    <h3>강한 업종</h3>
-    <p>{summary.get('strong_sectors', '')}</p>
+<h3>강한 업종</h3>
+<p>{summary.get('strong_sectors', '')}</p>
 
-    <h3>약한 업종</h3>
-    <p>{summary.get('weak_sectors', '')}</p>
+<h3>약한 업종</h3>
+<p>{summary.get('weak_sectors', '')}</p>
 
-    <h3>내일 체크 포인트</h3>
-    <p>{summary.get('tomorrow_points', '')}</p>
-    """.strip()
+<h3>내일 체크 포인트</h3>
+<p>{summary.get('tomorrow_points', '')}</p>
+""".strip()
 
 def publish_wordpress(summary: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     if not (WP_URL and WP_USERNAME and WP_APP_PASSWORD):
@@ -304,6 +358,7 @@ def publish_wordpress(summary: Dict[str, Any]) -> Tuple[Optional[str], Optional[
 
     endpoint = f"{WP_URL.rstrip('/')}/wp-json/wp/v2/posts"
     auth = (WP_USERNAME, WP_APP_PASSWORD)
+
     payload = {
         "title": summary["post_title"],
         "content": build_wp_html(summary),
@@ -312,25 +367,41 @@ def publish_wordpress(summary: Dict[str, Any]) -> Tuple[Optional[str], Optional[
 
     try:
         res = requests.post(endpoint, auth=auth, json=payload, timeout=30)
+        print("[publish_wordpress] status:", res.status_code)
         res.raise_for_status()
+
         data = res.json()
-        return data.get("title", {}).get("rendered"), data.get("link")
+        wp_title = data.get("title", {}).get("rendered") if isinstance(data.get("title"), dict) else summary["post_title"]
+        wp_link = data.get("link")
+
+        return wp_title, wp_link
+
     except Exception as e:
         print(f"[publish_wordpress] error: {e}")
+        try:
+            print("[publish_wordpress] response text:", res.text)
+        except Exception:
+            pass
         return None, None
 
+# =========================
+# 메인
+# =========================
 def main():
     print(f"[START] FORCE_STAGE={FORCE_STAGE}, MARKET_TYPE={MARKET_TYPE}, date={today_str()}")
 
     market_data = collect_market_data()
-    print("[market_data]", json.dumps(market_data, ensure_ascii=False, indent=2))
+    print("[market_data]")
+    print(json.dumps(market_data, ensure_ascii=False, indent=2))
 
     summary = generate_summary(FORCE_STAGE, market_data)
-    print("[summary]", json.dumps(summary, ensure_ascii=False, indent=2))
+    print("[summary]")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
     post_title = None
     post_url = None
 
+    # 마감 시황만 워드프레스 발행
     if FORCE_STAGE == "close":
         post_title, post_url = publish_wordpress(summary)
 
