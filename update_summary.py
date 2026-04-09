@@ -17,7 +17,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
-# WP_URL 우선, 없으면 WP_SITE_URL 사용
 WP_URL = os.getenv("WP_URL", os.getenv("WP_SITE_URL", "")).strip()
 WP_USERNAME = os.getenv("WP_USERNAME", "").strip()
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "").strip()
@@ -36,9 +35,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 KST = ZoneInfo("Asia/Seoul")
 
-# =========================
-# stage 매핑
-# =========================
 STAGE_TO_MARKET_TYPE = {
     "pre_open": "kr_stock_preopen",
     "intraday": "kr_stock_morning",
@@ -50,9 +46,6 @@ if FORCE_STAGE not in STAGE_TO_MARKET_TYPE:
 
 MARKET_TYPE = STAGE_TO_MARKET_TYPE[FORCE_STAGE]
 
-# =========================
-# 유틸
-# =========================
 def now_kst() -> datetime:
     return datetime.now(KST)
 
@@ -63,7 +56,10 @@ def safe_float(v, default=0.0):
     try:
         if v is None:
             return default
-        return float(v)
+        val = float(v)
+        if val != val:  # NaN
+            return default
+        return val
     except Exception:
         return default
 
@@ -80,12 +76,24 @@ def get_ticker_snapshot(ticker: str, name: str) -> Dict[str, Any]:
             }
 
         last = hist.iloc[-1]
-        close = safe_float(last.get("Close"))
+        close = safe_float(last.get("Close"), None)
 
+        if close is None:
+            close = None
+
+        prev_close = None
         if len(hist) >= 2:
-            prev_close = safe_float(hist.iloc[-2].get("Close"), close)
-        else:
-            prev_close = close
+            prev_close = safe_float(hist.iloc[-2].get("Close"), None)
+
+        if close is None or prev_close is None:
+            return {
+                "name": name,
+                "ticker": ticker,
+                "close": close,
+                "prev_close": prev_close,
+                "change": None,
+                "pct": None,
+            }
 
         change = close - prev_close
         pct = (change / prev_close * 100.0) if prev_close else 0.0
@@ -123,9 +131,6 @@ def collect_market_data() -> Dict[str, Any]:
         },
     }
 
-# =========================
-# 프롬프트
-# =========================
 def build_system_prompt(stage: str) -> str:
     common = """
 너는 한국 주식시장 시황 전문 에디터다.
@@ -144,50 +149,56 @@ def build_system_prompt(stage: str) -> str:
 
 문체 규칙:
 - 지나치게 과장하지 말 것
-- 실제 뉴스레터/증권사 브리핑처럼 간결하고 읽기 쉽게 작성
+- 실제 증권사 데일리 브리핑처럼 간결하고 읽기 쉽게 작성
 - 한글로 작성
 - 이모지 금지
 - 투자 권유 문구 금지
-- 숫자를 언급할 때는 가능하면 제공된 데이터 기반으로 작성
+- 제공된 숫자만 근거로 사용할 것
+- 데이터가 없으면 없다고 솔직히 쓸 것
 """
 
     if stage == "pre_open":
         return common + """
 이번 글은 "개장 전 브리핑"이다.
 
-역할 규칙:
-- 반드시 밤사이 미국장 흐름을 중심으로 작성
-- 나스닥, S&P500, 다우, 환율, 위험자산 심리, 밤사이 변수 위주로 정리
-- 아직 한국장이 시작하지 않았다는 점이 문장에 자연스럽게 드러나야 함
-- 코스피/코스닥 텍스트도 "오늘 한국장에 미칠 가능성" 관점으로 작성
-- strong_sectors / weak_sectors는 "관심 업종" 또는 "주의 업종" 느낌으로 작성
-- tomorrow_points에는 "오늘 장에서 체크할 변수"를 작성
-- full_text는 반드시 "밤사이 미국 증시와 환율 흐름이 오늘 한국장에 어떤 영향을 줄지" 중심으로 작성
+핵심 규칙:
+- 미국 3대 지수는 반드시 "전일 마감 기준"으로 해석하라.
+- 다우, S&P500, 나스닥의 방향성과 강도를 비교해라.
+- 원/달러 환율 방향이 외국인 수급, 성장주/수출주/내수주에 어떤 영향을 줄 수 있는지 해석하라.
+- 오늘 한국장이 어떤 분위기로 출발할 가능성이 있는지 써라.
+- strong_sectors는 오늘 관심 업종, weak_sectors는 오늘 주의 업종으로 써라.
+- full_text는 밤사이 미국장, 환율, 오늘 한국장 예상 흐름을 자연스럽게 연결해서 써라.
+- tomorrow_points는 실제 장 시작 전에 봐야 할 체크포인트를 구체적으로 써라.
+
+절대 금지:
+- 오전 장중 결과처럼 쓰지 말 것
+- 장 마감 총평처럼 쓰지 말 것
+- 존재하지 않는 뉴스나 이벤트를 지어내지 말 것
 """
 
     if stage == "intraday":
         return common + """
 이번 글은 "오전 시황"이다.
 
-역할 규칙:
+핵심 규칙:
 - 오전 실제 흐름 중심으로 작성
 - 코스피/코스닥의 오전 움직임, 강세 업종, 약세 업종, 수급 분위기 중심
-- 개장 전 브리핑처럼 미국장 중심으로 쓰지 말 것
+- 개장 전 브리핑처럼 미국장 중심으로 길게 쓰지 말 것
 - 마감 총평처럼 하루 전체 결론으로 쓰지 말 것
-- tomorrow_points에는 "오후장 체크 포인트"를 작성
-- full_text는 반드시 "오전 장세 해설"이어야 함
+- tomorrow_points에는 오후장 체크 포인트를 작성
+- full_text는 반드시 오전 장세 해설이어야 함
 """
 
     if stage == "close":
         return common + """
 이번 글은 "장 마감 시황"이다.
 
-역할 규칙:
+핵심 규칙:
 - 하루 전체를 정리하는 총평 형식으로 작성
 - 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
-- tomorrow_points에는 "내일 체크 포인트"를 작성
-- full_text는 "오늘 시장을 한 번에 정리하는 마감 브리핑"이어야 함
-- post_title은 워드프레스 발행용 제목이므로 자연스럽고 클릭 가능한 제목으로 작성
+- tomorrow_points에는 내일 체크 포인트를 작성
+- full_text는 오늘 시장을 한 번에 정리하는 마감 브리핑이어야 함
+- post_title은 워드프레스 발행용 제목으로 자연스럽고 클릭 가능한 제목으로 작성
 """
 
     raise ValueError(f"Unknown stage: {stage}")
@@ -215,9 +226,6 @@ def build_user_prompt(stage: str, market_data: Dict[str, Any]) -> str:
 }}
 """
 
-# =========================
-# OpenAI 호출
-# =========================
 def extract_json_text(content) -> str:
     if content is None:
         return ""
@@ -278,44 +286,34 @@ def generate_summary(stage: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
 
     return result
 
-# =========================
-# Supabase 저장
-# =========================
 def upsert_summary(row: Dict[str, Any]) -> None:
-    try:
-        existing = (
+    existing = (
+        supabase.table("market_summaries")
+        .select("id")
+        .eq("summary_date", row["summary_date"])
+        .eq("market_type", row["market_type"])
+        .limit(1)
+        .execute()
+    )
+    existing_rows = existing.data or []
+
+    if existing_rows:
+        row_id = existing_rows[0]["id"]
+        (
             supabase.table("market_summaries")
-            .select("id")
-            .eq("summary_date", row["summary_date"])
-            .eq("market_type", row["market_type"])
-            .limit(1)
+            .update(row)
+            .eq("id", row_id)
             .execute()
         )
-        existing_rows = existing.data or []
+        print(f"[upsert_summary] updated id={row_id}")
+    else:
+        (
+            supabase.table("market_summaries")
+            .insert(row)
+            .execute()
+        )
+        print("[upsert_summary] inserted new row")
 
-        if existing_rows:
-            row_id = existing_rows[0]["id"]
-            (
-                supabase.table("market_summaries")
-                .update(row)
-                .eq("id", row_id)
-                .execute()
-            )
-            print(f"[upsert_summary] updated id={row_id}")
-        else:
-            (
-                supabase.table("market_summaries")
-                .insert(row)
-                .execute()
-            )
-            print("[upsert_summary] inserted new row")
-
-    except Exception as e:
-        raise RuntimeError(f"Supabase 저장 실패: {e}")
-
-# =========================
-# WordPress 발행
-# =========================
 def build_wp_html(summary: Dict[str, Any]) -> str:
     full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
 
@@ -381,9 +379,6 @@ def publish_wordpress(summary: Dict[str, Any]) -> Tuple[str, str]:
     print("[publish_wordpress] success link:", wp_link)
     return wp_title or summary["post_title"], wp_link
 
-# =========================
-# 메인
-# =========================
 def main():
     print(f"[START] FORCE_STAGE={FORCE_STAGE}, MARKET_TYPE={MARKET_TYPE}, date={today_str()}")
 
