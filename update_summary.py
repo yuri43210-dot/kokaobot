@@ -1,420 +1,375 @@
 import os
-import json
-from datetime import datetime
+import traceback
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
-import requests
-import yfinance as yf
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from supabase import create_client, Client
-from openai import OpenAI
 
 # =========================
 # 환경변수
 # =========================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+BLOG_HOME_URL = os.getenv("BLOG_HOME_URL", "").strip()
 
-WP_URL = os.getenv("WP_URL", os.getenv("WP_SITE_URL", "")).strip()
-WP_USERNAME = os.getenv("WP_USERNAME", "").strip()
-WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "").strip()
-
-FORCE_STAGE = os.getenv("FORCE_STAGE", "").strip().lower()
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY가 필요합니다.")
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_URL / SUPABASE_KEY가 필요합니다.")
-if not FORCE_STAGE:
-    raise RuntimeError("FORCE_STAGE가 필요합니다. pre_open / intraday / close 중 하나를 넣어주세요.")
+    raise RuntimeError("SUPABASE_URL / SUPABASE_KEY 환경변수가 필요합니다.")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+app = FastAPI()
 KST = ZoneInfo("Asia/Seoul")
 
-STAGE_TO_MARKET_TYPE = {
-    "pre_open": "kr_stock_preopen",
-    "intraday": "kr_stock_morning",
-    "close": "kr_stock_close",
-}
+# =========================
+# Quick Replies
+# =========================
+QUICK_REPLIES = [
+    {"label": "🔥 오늘 시장 방향", "action": "message", "messageText": "개장 전"},
+    {"label": "📊 지금 시장 흐름", "action": "message", "messageText": "오전 시황"},
+    {"label": "📉 오늘 결과 정리", "action": "message", "messageText": "장 마감"},
+    {"label": "🌍 미국장 영향", "action": "message", "messageText": "글로벌"},
+]
 
-if FORCE_STAGE not in STAGE_TO_MARKET_TYPE:
-    raise RuntimeError("FORCE_STAGE는 pre_open / intraday / close 중 하나여야 합니다.")
+# =========================
+# 안내 문구
+# =========================
+MORNING_BLOCK_TEXT = (
+    "📊 오전 시황은 13시에 정리됩니다.\n\n"
+    "장 초반 흐름이 더 확인된 뒤 업데이트됩니다."
+)
 
-MARKET_TYPE = STAGE_TO_MARKET_TYPE[FORCE_STAGE]
+CLOSE_BLOCK_TEXT = (
+    "📉 아직 한국장이 마감되지 않았습니다.\n\n"
+    "장 마감 후 마감 시황이 정리됩니다."
+)
 
+PREOPEN_EMPTY_TEXT = (
+    "🔥 오늘 시장 방향 브리핑이 아직 준비되지 않았습니다.\n\n"
+    "잠시 후 다시 확인해 주세요."
+)
+
+MORNING_EMPTY_TEXT = (
+    "📊 오전 시황 데이터가 아직 준비되지 않았습니다.\n\n"
+    "잠시 후 다시 확인해 주세요."
+)
+
+CLOSE_EMPTY_TEXT = (
+    "📉 장 마감 시황 데이터가 아직 준비되지 않았습니다.\n\n"
+    "잠시 후 다시 확인해 주세요."
+)
+
+GLOBAL_TEXT = (
+    "🌍 글로벌 브리핑은 별도 기능으로 연결 예정입니다.\n\n"
+    "현재는 개장 전 / 오전 시황 / 장 마감 중심으로 운영 중입니다."
+)
+
+# =========================
+# 유틸
+# =========================
 def now_kst() -> datetime:
     return datetime.now(KST)
 
-def today_str() -> str:
-    return now_kst().strftime("%Y-%m-%d")
+def today_kst() -> date:
+    return now_kst().date()
 
-def safe_float(v, default=0.0):
-    try:
-        if v is None:
-            return default
-        val = float(v)
-        if val != val:  # NaN
-            return default
-        return val
-    except Exception:
-        return default
+def format_date_kr(d: date) -> str:
+    return d.strftime("%Y-%m-%d")
 
-def get_ticker_snapshot(ticker: str, name: str) -> Dict[str, Any]:
-    try:
-        t = yf.Ticker(ticker)
-        hist = t.history(period="5d", interval="1d", auto_adjust=False)
+def is_after_13(now_dt: datetime) -> bool:
+    return (now_dt.hour, now_dt.minute) >= (13, 0)
 
-        if hist is None or hist.empty:
-            return {
-                "name": name,
-                "ticker": ticker,
-                "error": "no_data"
-            }
+def is_after_1530(now_dt: datetime) -> bool:
+    return (now_dt.hour, now_dt.minute) >= (15, 30)
 
-        last = hist.iloc[-1]
-        close = safe_float(last.get("Close"), None)
+def detect_user_command(user_text: str) -> str:
+    text = (user_text or "").strip()
 
-        if close is None:
-            close = None
+    if "개장 전" in text or "개장전" in text:
+        return "preopen"
+    if "오전" in text:
+        return "morning"
+    if "마감" in text or "장 마감" in text or "장마감" in text:
+        return "close"
+    if "글로벌" in text or "미국장" in text:
+        return "global"
 
-        prev_close = None
-        if len(hist) >= 2:
-            prev_close = safe_float(hist.iloc[-2].get("Close"), None)
+    return "preopen"
 
-        if close is None or prev_close is None:
-            return {
-                "name": name,
-                "ticker": ticker,
-                "close": close,
-                "prev_close": prev_close,
-                "change": None,
-                "pct": None,
-            }
-
-        change = close - prev_close
-        pct = (change / prev_close * 100.0) if prev_close else 0.0
-
-        return {
-            "name": name,
-            "ticker": ticker,
-            "close": round(close, 4),
-            "prev_close": round(prev_close, 4),
-            "change": round(change, 4),
-            "pct": round(pct, 2),
-        }
-    except Exception as e:
-        return {
-            "name": name,
-            "ticker": ticker,
-            "error": str(e),
-        }
-
-def collect_market_data() -> Dict[str, Any]:
+def get_market_type(stage: str) -> Optional[str]:
     return {
-        "date_kst": today_str(),
-        "collected_at_kst": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
-        "us_markets": {
-            "dow": get_ticker_snapshot("^DJI", "다우"),
-            "sp500": get_ticker_snapshot("^GSPC", "S&P500"),
-            "nasdaq": get_ticker_snapshot("^IXIC", "나스닥"),
-        },
-        "kr_markets": {
-            "kospi": get_ticker_snapshot("^KS11", "코스피"),
-            "kosdaq": get_ticker_snapshot("^KQ11", "코스닥"),
-        },
-        "fx": {
-            "usdkrw": get_ticker_snapshot("KRW=X", "USD/KRW"),
-        },
+        "preopen": "kr_stock_preopen",
+        "morning": "kr_stock_morning",
+        "close": "kr_stock_close",
+    }.get(stage)
+
+def fetch_summary(summary_date: str, market_type: str) -> Optional[Dict[str, Any]]:
+    try:
+        result = (
+            supabase.table("market_summaries")
+            .select("*")
+            .eq("summary_date", summary_date)
+            .eq("market_type", market_type)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        if not rows:
+            return None
+        return rows[0]
+    except Exception as e:
+        print(f"[fetch_summary] error: {e}")
+        traceback.print_exc()
+        return None
+
+def safe_text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+def trim_text(text: str, max_len: int) -> str:
+    text = safe_text(text)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+def compact_line(label: str, value: Any) -> str:
+    text = safe_text(value)
+    if not text:
+        return ""
+    return f"{label} {text}"
+
+# =========================
+# 카카오 응답 빌더
+# =========================
+def make_simple_text_response(text: str) -> Dict[str, Any]:
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "simpleText": {
+                        "text": text
+                    }
+                }
+            ],
+            "quickReplies": QUICK_REPLIES
+        }
     }
 
-def build_system_prompt(stage: str) -> str:
-    common = """
-너는 한국 주식시장 시황 전문 에디터다.
-반드시 JSON만 출력해야 한다.
-설명 문장, 코드블록, 마크다운 없이 JSON 객체만 출력한다.
+def make_basic_card_response(
+    title: str,
+    description: str,
+    button_label: Optional[str] = None,
+    button_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    card: Dict[str, Any] = {
+        "title": trim_text(title, 40),
+        "description": trim_text(description, 230),
+    }
 
-반드시 아래 키를 모두 포함하라:
-- one_line
-- kospi_text
-- kosdaq_text
-- strong_sectors
-- weak_sectors
-- tomorrow_points
-- full_text
-- post_title
+    if button_label and button_url:
+        card["buttons"] = [
+            {
+                "action": "webLink",
+                "label": trim_text(button_label, 14),
+                "webLinkUrl": button_url,
+            }
+        ]
 
-문체 규칙:
-- 지나치게 과장하지 말 것
-- 실제 증권사 데일리 브리핑처럼 간결하고 읽기 쉽게 작성
-- 한글로 작성
-- 이모지 금지
-- 투자 권유 문구 금지
-- 제공된 숫자만 근거로 사용할 것
-- 데이터가 없으면 없다고 솔직히 쓸 것
-"""
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [
+                {
+                    "basicCard": card
+                }
+            ],
+            "quickReplies": QUICK_REPLIES
+        }
+    }
 
-    if stage == "pre_open":
-        return common + """
-이번 글은 "개장 전 브리핑"이다.
+# =========================
+# 카드 내용 구성
+# =========================
+def build_preopen_card(row: Dict[str, Any]) -> Dict[str, str]:
+    title = "🔥 개장 전 | 오늘 시장 방향"
+    description = "\n".join(filter(None, [
+        compact_line("• 핵심:", row.get("one_line")),
+        compact_line("• 체크:", row.get("tomorrow_points")),
+        compact_line("• 관심:", row.get("strong_sectors")),
+        compact_line("• 주의:", row.get("weak_sectors")),
+    ]))
+    return {"title": title, "description": description}
 
-핵심 규칙:
-- 미국 3대 지수는 반드시 "전일 마감 기준"으로 해석하라.
-- 다우, S&P500, 나스닥의 방향성과 강도를 비교해라.
-- 원/달러 환율 방향이 외국인 수급, 성장주/수출주/내수주에 어떤 영향을 줄 수 있는지 해석하라.
-- 오늘 한국장이 어떤 분위기로 출발할 가능성이 있는지 써라.
-- strong_sectors는 오늘 관심 업종, weak_sectors는 오늘 주의 업종으로 써라.
-- full_text는 밤사이 미국장, 환율, 오늘 한국장 예상 흐름을 자연스럽게 연결해서 써라.
-- tomorrow_points는 실제 장 시작 전에 봐야 할 체크포인트를 구체적으로 써라.
+def build_morning_card(row: Dict[str, Any]) -> Dict[str, str]:
+    title = "📊 오전 시황 | 지금 시장 흐름"
+    description = "\n".join(filter(None, [
+        compact_line("• 핵심:", row.get("one_line")),
+        compact_line("• 코스피:", row.get("kospi_text")),
+        compact_line("• 코스닥:", row.get("kosdaq_text")),
+        compact_line("• 강세:", row.get("strong_sectors")),
+        compact_line("• 약세:", row.get("weak_sectors")),
+    ]))
+    return {"title": title, "description": description}
 
-절대 금지:
-- 오전 장중 결과처럼 쓰지 말 것
-- 장 마감 총평처럼 쓰지 말 것
-- 존재하지 않는 뉴스나 이벤트를 지어내지 말 것
-"""
+def build_close_card(row: Dict[str, Any]) -> Dict[str, str]:
+    title = "📉 장 마감 | 오늘 시장 결과 정리"
+    description = "\n".join(filter(None, [
+        compact_line("• 핵심:", row.get("one_line")),
+        compact_line("• 코스피:", row.get("kospi_text")),
+        compact_line("• 코스닥:", row.get("kosdaq_text")),
+        compact_line("• 강세:", row.get("strong_sectors")),
+        compact_line("• 약세:", row.get("weak_sectors")),
+        compact_line("• 내일:", row.get("tomorrow_points")),
+    ]))
+    return {"title": title, "description": description}
 
-    if stage == "intraday":
-        return common + """
-이번 글은 "오전 시황"이다.
+# =========================
+# stage별 응답
+# =========================
+def build_stage_response(stage: str) -> Dict[str, Any]:
+    now_dt = now_kst()
+    today_str = format_date_kr(today_kst())
 
-핵심 규칙:
-- 오전 실제 흐름 중심으로 작성
-- 코스피/코스닥의 오전 움직임, 강세 업종, 약세 업종, 수급 분위기 중심
-- 개장 전 브리핑처럼 미국장 중심으로 길게 쓰지 말 것
-- 마감 총평처럼 하루 전체 결론으로 쓰지 말 것
-- tomorrow_points에는 오후장 체크 포인트를 작성
-- full_text는 반드시 오전 장세 해설이어야 함
-"""
+    if stage == "global":
+        return make_simple_text_response(GLOBAL_TEXT)
+
+    if stage == "morning" and not is_after_13(now_dt):
+        return make_simple_text_response(MORNING_BLOCK_TEXT)
+
+    if stage == "close" and not is_after_1530(now_dt):
+        return make_simple_text_response(CLOSE_BLOCK_TEXT)
+
+    market_type = get_market_type(stage)
+    if not market_type:
+        return make_simple_text_response("요청을 이해하지 못했습니다.")
+
+    row = fetch_summary(today_str, market_type)
+
+    if not row:
+        if stage == "preopen":
+            return make_simple_text_response(PREOPEN_EMPTY_TEXT)
+        if stage == "morning":
+            return make_simple_text_response(MORNING_EMPTY_TEXT)
+        if stage == "close":
+            return make_simple_text_response(CLOSE_EMPTY_TEXT)
+
+    if stage == "preopen":
+        card = build_preopen_card(row)
+        return make_basic_card_response(
+            title=card["title"],
+            description=card["description"]
+        )
+
+    if stage == "morning":
+        card = build_morning_card(row)
+        return make_basic_card_response(
+            title=card["title"],
+            description=card["description"]
+        )
 
     if stage == "close":
-        return common + """
-이번 글은 "장 마감 시황"이다.
+        card = build_close_card(row)
+        post_url = safe_text(row.get("post_url")) or BLOG_HOME_URL
 
-핵심 규칙:
-- 하루 전체를 정리하는 총평 형식으로 작성
-- 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
-- tomorrow_points에는 내일 체크 포인트를 작성
-- full_text는 오늘 시장을 한 번에 정리하는 마감 브리핑이어야 함
-- post_title은 워드프레스 발행용 제목으로 자연스럽고 클릭 가능한 제목으로 작성
-"""
+        if post_url:
+            return make_basic_card_response(
+                title=card["title"],
+                description=card["description"],
+                button_label="블로그 분석 보기",
+                button_url=post_url
+            )
 
-    raise ValueError(f"Unknown stage: {stage}")
+        return make_basic_card_response(
+            title=card["title"],
+            description=card["description"]
+        )
 
-def build_user_prompt(stage: str, market_data: Dict[str, Any]) -> str:
-    return f"""
-오늘 날짜(KST): {today_str()}
-현재 stage: {stage}
+    return make_simple_text_response("요청을 처리하지 못했습니다.")
 
-시장 데이터(JSON):
-{json.dumps(market_data, ensure_ascii=False, indent=2)}
+# =========================
+# 헬스체크 / keep-alive
+# =========================
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "message": "Kakao market skill server is running",
+        "time_kst": now_kst().isoformat()
+    }
 
-위 데이터를 바탕으로 해당 stage에 맞는 시황을 JSON으로 작성하라.
-반드시 아래 형식의 JSON 객체만 출력하라.
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
 
-{{
-  "one_line": "...",
-  "kospi_text": "...",
-  "kosdaq_text": "...",
-  "strong_sectors": "...",
-  "weak_sectors": "...",
-  "tomorrow_points": "...",
-  "full_text": "...",
-  "post_title": "..."
-}}
-"""
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "time_kst": now_kst().isoformat()
+    }
 
-def extract_json_text(content) -> str:
-    if content is None:
-        return ""
+@app.head("/health")
+def health_head():
+    return Response(status_code=200)
 
-    if isinstance(content, str):
-        return content.strip()
+@app.get("/test")
+def test(stage: str = "preopen"):
+    return build_stage_response(stage)
 
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "output_text" and item.get("text"):
-                    parts.append(item["text"])
-                elif item.get("text"):
-                    parts.append(str(item["text"]))
-            else:
-                parts.append(str(item))
-        return "".join(parts).strip()
-
-    return str(content).strip()
-
-def generate_summary(stage: str, market_data: Dict[str, Any]) -> Dict[str, Any]:
-    system_prompt = build_system_prompt(stage)
-    user_prompt = build_user_prompt(stage, market_data)
-
-    resp = client.chat.completions.create(
-        model="gpt-5",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
-
-    raw_content = resp.choices[0].message.content
-    content = extract_json_text(raw_content)
-
+# =========================
+# 공통 카카오 처리
+# =========================
+async def handle_kakao_request(request: Request, forced_stage: Optional[str] = None):
     try:
-        result = json.loads(content)
-    except Exception:
-        print("[generate_summary] JSON parse failed")
-        print("[generate_summary] raw content:", content)
-        raise RuntimeError("모델 응답이 JSON이 아닙니다.")
+        body = await request.json()
+        print("[kakao] request body:", body)
 
-    required_keys = [
-        "one_line",
-        "kospi_text",
-        "kosdaq_text",
-        "strong_sectors",
-        "weak_sectors",
-        "tomorrow_points",
-        "full_text",
-        "post_title",
-    ]
+        user_request = body.get("userRequest", {}) or {}
+        utterance = user_request.get("utterance", "") or ""
 
-    for k in required_keys:
-        if k not in result:
-            raise RuntimeError(f"응답 JSON에 {k} 키가 없습니다.")
+        action = body.get("action", {}) or {}
+        params = action.get("params", {}) or {}
 
-    return result
+        candidate_text = utterance
+        if not candidate_text:
+            candidate_text = " ".join([str(v) for v in params.values() if v])
 
-def upsert_summary(row: Dict[str, Any]) -> None:
-    existing = (
-        supabase.table("market_summaries")
-        .select("id")
-        .eq("summary_date", row["summary_date"])
-        .eq("market_type", row["market_type"])
-        .limit(1)
-        .execute()
-    )
-    existing_rows = existing.data or []
+        stage = forced_stage or detect_user_command(candidate_text)
+        response = build_stage_response(stage)
 
-    if existing_rows:
-        row_id = existing_rows[0]["id"]
-        (
-            supabase.table("market_summaries")
-            .update(row)
-            .eq("id", row_id)
-            .execute()
+        print("[kakao] detected stage:", stage)
+        print("[kakao] response ready")
+
+        return JSONResponse(content=response)
+
+    except Exception as e:
+        print("[kakao] error:", e)
+        traceback.print_exc()
+        return JSONResponse(
+            content=make_simple_text_response(
+                "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+            )
         )
-        print(f"[upsert_summary] updated id={row_id}")
-    else:
-        (
-            supabase.table("market_summaries")
-            .insert(row)
-            .execute()
-        )
-        print("[upsert_summary] inserted new row")
 
-def build_wp_html(summary: Dict[str, Any]) -> str:
-    full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
+# =========================
+# 카카오 엔드포인트
+# =========================
+@app.post("/kakao/skill")
+async def kakao_skill(request: Request):
+    return await handle_kakao_request(request)
 
-    return f"""
-<h2>{summary.get('one_line', '')}</h2>
-<p>{full_text_html}</p>
+# 예전 경로 호환
+@app.post("/kakao/market-preopen")
+async def kakao_market_preopen(request: Request):
+    return await handle_kakao_request(request, forced_stage="preopen")
 
-<h3>코스피</h3>
-<p>{summary.get('kospi_text', '')}</p>
+@app.post("/kakao/market-morning")
+async def kakao_market_morning(request: Request):
+    return await handle_kakao_request(request, forced_stage="morning")
 
-<h3>코스닥</h3>
-<p>{summary.get('kosdaq_text', '')}</p>
-
-<h3>강한 업종</h3>
-<p>{summary.get('strong_sectors', '')}</p>
-
-<h3>약한 업종</h3>
-<p>{summary.get('weak_sectors', '')}</p>
-
-<h3>내일 체크 포인트</h3>
-<p>{summary.get('tomorrow_points', '')}</p>
-""".strip()
-
-def publish_wordpress(summary: Dict[str, Any]) -> Tuple[str, str]:
-    if not WP_URL:
-        raise RuntimeError("WP_URL/WP_SITE_URL이 비어 있습니다.")
-    if not WP_USERNAME:
-        raise RuntimeError("WP_USERNAME이 비어 있습니다.")
-    if not WP_APP_PASSWORD:
-        raise RuntimeError("WP_APP_PASSWORD가 비어 있습니다.")
-
-    endpoint = f"{WP_URL.rstrip('/')}/wp-json/wp/v2/posts"
-    auth = (WP_USERNAME, WP_APP_PASSWORD)
-
-    payload = {
-        "title": summary["post_title"],
-        "content": build_wp_html(summary),
-        "status": "publish",
-    }
-
-    print("[publish_wordpress] endpoint:", endpoint)
-    print("[publish_wordpress] title:", summary["post_title"])
-
-    res = requests.post(endpoint, auth=auth, json=payload, timeout=30)
-
-    print("[publish_wordpress] status:", res.status_code)
-    print("[publish_wordpress] response text:", res.text[:1000])
-
-    res.raise_for_status()
-    data = res.json()
-
-    wp_title = (
-        data.get("title", {}).get("rendered")
-        if isinstance(data.get("title"), dict)
-        else summary["post_title"]
-    )
-
-    wp_link = data.get("link") or ""
-
-    if not wp_link:
-        raise RuntimeError("워드프레스 응답에 link가 없습니다.")
-
-    print("[publish_wordpress] success link:", wp_link)
-    return wp_title or summary["post_title"], wp_link
-
-def main():
-    print(f"[START] FORCE_STAGE={FORCE_STAGE}, MARKET_TYPE={MARKET_TYPE}, date={today_str()}")
-
-    market_data = collect_market_data()
-    print("[market_data]")
-    print(json.dumps(market_data, ensure_ascii=False, indent=2))
-
-    summary = generate_summary(FORCE_STAGE, market_data)
-    print("[summary]")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-
-    post_title = summary.get("post_title", "")
-    post_url = ""
-
-    if FORCE_STAGE == "close":
-        wp_title, wp_link = publish_wordpress(summary)
-        post_title = wp_title
-        post_url = wp_link
-
-    row = {
-        "summary_date": today_str(),
-        "market_type": MARKET_TYPE,
-        "one_line": summary.get("one_line", ""),
-        "kospi_text": summary.get("kospi_text", ""),
-        "kosdaq_text": summary.get("kosdaq_text", ""),
-        "strong_sectors": summary.get("strong_sectors", ""),
-        "weak_sectors": summary.get("weak_sectors", ""),
-        "tomorrow_points": summary.get("tomorrow_points", ""),
-        "full_text": summary.get("full_text", ""),
-        "post_title": post_title,
-        "post_url": post_url,
-        "updated_at": now_kst().isoformat(),
-    }
-
-    upsert_summary(row)
-    print("[DONE] summary saved successfully")
-
-if __name__ == "__main__":
-    main()
+@app.post("/kakao/market-close")
+async def kakao_market_close(request: Request):
+    return await handle_kakao_request(request, forced_stage="close")
