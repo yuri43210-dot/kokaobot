@@ -166,7 +166,7 @@ def make_basic_card_response(
 ) -> Dict[str, Any]:
     card: Dict[str, Any] = {
         "title": trim_text(title, 40),
-        "description": trim_text(description, 330),
+        "description": trim_text(description, 700),
     }
 
     if button_label and button_url:
@@ -198,6 +198,7 @@ def build_preopen_card(row: Dict[str, Any]) -> Dict[str, str]:
 
     description = "\n".join(filter(None, [
         compact_line("• 핵심:", row.get("one_line")),
+        "",
         compact_line("• 다우:", row.get("dow_text")),
         compact_line("• S&P500:", row.get("sp500_text")),
         compact_line("• 나스닥:", row.get("nasdaq_text")),
@@ -207,6 +208,10 @@ def build_preopen_card(row: Dict[str, Any]) -> Dict[str, str]:
         compact_line("• 뉴스1:", row.get("news_1")),
         compact_line("• 뉴스2:", row.get("news_2")),
         compact_line("• 뉴스3:", row.get("news_3")),
+        "",
+        compact_line("• 관심:", row.get("strong_sectors")),
+        compact_line("• 주의:", row.get("weak_sectors")),
+        compact_line("• 체크:", row.get("tomorrow_points")),
     ]))
 
     return {"title": title, "description": description}
@@ -215,10 +220,14 @@ def build_morning_card(row: Dict[str, Any]) -> Dict[str, str]:
     title = "📊 오전 시황 | 지금 시장 흐름"
     description = "\n".join(filter(None, [
         compact_line("• 핵심:", row.get("one_line")),
+        "",
         compact_line("• 코스피:", row.get("kospi_text")),
         compact_line("• 코스닥:", row.get("kosdaq_text")),
+        "",
         compact_line("• 강세:", row.get("strong_sectors")),
         compact_line("• 약세:", row.get("weak_sectors")),
+        "",
+        compact_line("• 체크:", row.get("tomorrow_points")),
     ]))
     return {"title": title, "description": description}
 
@@ -226,10 +235,13 @@ def build_close_card(row: Dict[str, Any]) -> Dict[str, str]:
     title = "📉 장 마감 | 오늘 시장 결과 정리"
     description = "\n".join(filter(None, [
         compact_line("• 핵심:", row.get("one_line")),
+        "",
         compact_line("• 코스피:", row.get("kospi_text")),
         compact_line("• 코스닥:", row.get("kosdaq_text")),
+        "",
         compact_line("• 강세:", row.get("strong_sectors")),
         compact_line("• 약세:", row.get("weak_sectors")),
+        "",
         compact_line("• 내일:", row.get("tomorrow_points")),
     ]))
     return {"title": title, "description": description}
@@ -280,14 +292,8 @@ def build_stage_response(stage: str) -> Dict[str, Any]:
 
     if stage == "close":
         card = build_close_card(row)
-
-        # 1순위: 오늘 마감 상세 글
         post_url = safe_text(row.get("post_url"))
-
-        # 2순위: 블로그 홈 fallback
-        fallback_url = BLOG_HOME_URL
-
-        target_url = post_url or fallback_url
+        target_url = post_url or BLOG_HOME_URL
 
         if target_url:
             return make_basic_card_response(
@@ -376,7 +382,6 @@ async def handle_kakao_request(request: Request, forced_stage: Optional[str] = N
 async def kakao_skill(request: Request):
     return await handle_kakao_request(request)
 
-# 예전 경로 호환
 @app.post("/kakao/market-preopen")
 async def kakao_market_preopen(request: Request):
     return await handle_kakao_request(request, forced_stage="preopen")
