@@ -278,6 +278,16 @@ def build_stage_response(stage: str) -> Dict[str, Any]:
 
     if stage == "preopen":
         card = build_preopen_card(row)
+        target_url = safe_text(row.get("post_url")) or BLOG_HOME_URL
+
+        if target_url:
+            return make_basic_card_response(
+                title=card["title"],
+                description=card["description"],
+                button_label="개장 전 상세 보기",
+                button_url=target_url
+            )
+
         return make_basic_card_response(
             title=card["title"],
             description=card["description"]
@@ -292,8 +302,7 @@ def build_stage_response(stage: str) -> Dict[str, Any]:
 
     if stage == "close":
         card = build_close_card(row)
-        post_url = safe_text(row.get("post_url"))
-        target_url = post_url or BLOG_HOME_URL
+        target_url = safe_text(row.get("post_url")) or BLOG_HOME_URL
 
         if target_url:
             return make_basic_card_response(
@@ -311,7 +320,7 @@ def build_stage_response(stage: str) -> Dict[str, Any]:
     return make_simple_text_response("요청을 처리하지 못했습니다.")
 
 # =========================
-# 헬스체크 / keep-alive
+# 헬스체크
 # =========================
 @app.get("/")
 def root():
