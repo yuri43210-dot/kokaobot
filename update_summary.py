@@ -87,6 +87,12 @@ def sanitize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+def slugify_ko(text: str) -> str:
+    text = sanitize_text(text).lower()
+    text = re.sub(r"[^\w\s가-힣-]", "", text)
+    text = re.sub(r"\s+", "-", text).strip("-")
+    return text[:180]
+
 # =========================
 # 시장 데이터
 # =========================
@@ -241,7 +247,6 @@ def build_system_prompt(stage: str) -> str:
 - 지나치게 과장하지 말 것
 - 실제 증권사 데일리 브리핑처럼 간결하고 읽기 쉽게 작성
 - 한글로 작성
-- 이모지 금지
 - 투자 권유 문구 금지
 - 제공된 데이터만 근거로 사용할 것
 - 데이터가 없으면 없다고 솔직히 쓸 것
@@ -258,12 +263,8 @@ def build_system_prompt(stage: str) -> str:
 - 외국인 수급, 성장주/수출주/내수주에 어떤 영향이 있을지 해석하라.
 - 함께 제공된 밤사이 핵심 뉴스 3개를 오늘 한국장 관점에서 연결해서 해석하라.
 - strong_sectors는 오늘 관심 업종, weak_sectors는 오늘 주의 업종으로 작성하라.
-- full_text는 아래 4개를 반드시 자연스럽게 포함해야 한다.
-  1) 미국장 요약
-  2) SOX/반도체 해석
-  3) 환율/수급 해석
-  4) 밤사이 핵심 뉴스 3개가 한국장에 미칠 영향
-- tomorrow_points는 장 시작 전 체크해야 할 포인트를 구체적으로 작성하라.
+- full_text는 자연스러운 기사형 서술로 작성하고, 분량은 충분히 확보하라.
+- post_title은 검색형 제목으로 작성하라.
 
 절대 금지:
 - 존재하지 않는 뉴스나 이벤트를 지어내지 말 것
@@ -293,7 +294,7 @@ def build_system_prompt(stage: str) -> str:
 - 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
 - tomorrow_points에는 내일 체크 포인트를 작성
 - full_text는 오늘 시장을 한 번에 정리하는 마감 브리핑이어야 함
-- post_title은 워드프레스 발행용 제목으로 자연스럽고 클릭 가능한 제목으로 작성
+- post_title은 검색형 제목으로 작성하라
 """
 
     raise ValueError(f"Unknown stage: {stage}")
@@ -448,9 +449,7 @@ def upsert_summary(row: Dict[str, Any]) -> None:
 # =========================
 # WordPress 발행
 # =========================
-def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str) -> str:
-    full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
-
+def build_preopen_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str]) -> str:
     us = market_data.get("us_markets", {})
     fx = market_data.get("fx", {})
 
@@ -460,10 +459,12 @@ def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_tex
     sox = us.get("sox", {})
     usdkrw = fx.get("usdkrw", {})
 
-    news_block = ""
-    if stage == "pre_open":
-        news_block = f"""
-<h3>밤사이 미국 지수</h3>
+    intro = f"""
+<p>{summary.get('full_text', '').replace(chr(10), '<br>')}</p>
+"""
+
+    market_block = f"""
+<h2>밤사이 미국 증시 정리</h2>
 <ul>
   <li>다우: {fmt_price(dow.get('close'))} ({fmt_pct(dow.get('pct'))})</li>
   <li>S&amp;P500: {fmt_price(sp500.get('close'))} ({fmt_pct(sp500.get('pct'))})</li>
@@ -471,20 +472,60 @@ def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_tex
   <li>SOX: {fmt_price(sox.get('close'))} ({fmt_pct(sox.get('pct'))})</li>
   <li>원/달러: {fmt_price(usdkrw.get('close'))} ({fmt_pct(usdkrw.get('pct'))})</li>
 </ul>
+"""
 
-<h3>밤사이 핵심 뉴스 3개</h3>
+    news_block = f"""
+<h2>오늘 증시에 영향을 줄 밤사이 핵심 뉴스 3가지</h2>
 <ol>
   <li>{news_texts.get('news_1', '')}</li>
   <li>{news_texts.get('news_2', '')}</li>
   <li>{news_texts.get('news_3', '')}</li>
 </ol>
-""".strip()
+"""
+
+    sector_block = f"""
+<h2>오늘 관심 업종</h2>
+<p>{summary.get('strong_sectors', '')}</p>
+
+<h2>오늘 주의 업종</h2>
+<p>{summary.get('weak_sectors', '')}</p>
+"""
+
+    check_block = f"""
+<h2>개장 전 체크 포인트</h2>
+<p>{summary.get('tomorrow_points', '').replace(chr(10), '<br>')}</p>
+"""
+
+    conclusion = f"""
+<h2>오늘 한국장 포인트</h2>
+<p>{summary.get('one_line', '')}</p>
+
+<h3>코스피 전망</h3>
+<p>{summary.get('kospi_text', '')}</p>
+
+<h3>코스닥 전망</h3>
+<p>{summary.get('kosdaq_text', '')}</p>
+"""
 
     return f"""
-<h2>{summary.get('one_line', '')}</h2>
-<p>{full_text_html}</p>
-
+<h1>{summary.get('post_title', '')}</h1>
+{intro}
+{market_block}
 {news_block}
+{conclusion}
+{sector_block}
+{check_block}
+""".strip()
+
+def build_close_wp_html(summary: Dict[str, Any]) -> str:
+    return f"""
+<h1>{summary.get('post_title', '')}</h1>
+
+<h2>오늘 시장 한줄 요약</h2>
+<p>{summary.get('one_line', '')}</p>
+
+<h2>오늘 증시 총정리</h2>
+<p>{summary.get('full_text', '').replace(chr(10), '<br>')}</p>
 
 <h3>코스피</h3>
 <p>{summary.get('kospi_text', '')}</p>
@@ -492,15 +533,20 @@ def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_tex
 <h3>코스닥</h3>
 <p>{summary.get('kosdaq_text', '')}</p>
 
-<h3>강한 업종</h3>
+<h2>강한 업종</h2>
 <p>{summary.get('strong_sectors', '')}</p>
 
-<h3>약한 업종</h3>
+<h2>약한 업종</h2>
 <p>{summary.get('weak_sectors', '')}</p>
 
-<h3>체크 포인트</h3>
+<h2>내일 체크 포인트</h2>
 <p>{summary.get('tomorrow_points', '').replace(chr(10), '<br>')}</p>
 """.strip()
+
+def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str) -> str:
+    if stage == "pre_open":
+        return build_preopen_wp_html(summary, market_data, news_texts)
+    return build_close_wp_html(summary)
 
 def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str) -> Tuple[str, str]:
     if not WP_URL:
@@ -517,6 +563,7 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
         "title": summary["post_title"],
         "content": build_wp_html(summary, market_data, news_texts, stage),
         "status": "publish",
+        "slug": slugify_ko(summary["post_title"]),
     }
 
     print("[publish_wordpress] endpoint:", endpoint)
@@ -581,7 +628,6 @@ def main() -> None:
     post_title = summary.get("post_title", "")
     post_url = ""
 
-    # 개장 전 / 마감만 WordPress 발행
     if FORCE_STAGE in ("pre_open", "close"):
         wp_title, wp_link = publish_wordpress(summary, market_data, news_texts, FORCE_STAGE)
         post_title = wp_title
@@ -601,7 +647,6 @@ def main() -> None:
         "post_url": post_url,
         "updated_at": now_kst().isoformat(),
 
-        # 개장 전 카드용 미국지수/환율/뉴스 저장
         "dow_text": dow_text,
         "sp500_text": sp500_text,
         "nasdaq_text": nasdaq_text,
