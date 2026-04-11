@@ -87,13 +87,6 @@ def sanitize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-def first_nonempty(*values: Any) -> str:
-    for v in values:
-        s = str(v).strip() if v is not None else ""
-        if s:
-            return s
-    return ""
-
 # =========================
 # 시장 데이터
 # =========================
@@ -565,10 +558,21 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
         "status": "publish",
     }
 
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+
     print("[publish_wordpress] endpoint:", endpoint)
     print("[publish_wordpress] title:", summary["post_title"])
 
-    res = requests.post(endpoint, auth=auth, json=payload, timeout=30)
+    res = requests.post(
+        endpoint,
+        auth=auth,
+        data=payload,
+        headers=headers,
+        timeout=30,
+    )
 
     print("[publish_wordpress] status:", res.status_code)
     print("[publish_wordpress] response text:", res.text[:1000])
