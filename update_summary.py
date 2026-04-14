@@ -26,6 +26,15 @@ WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "").strip()
 
 FORCE_STAGE = os.getenv("FORCE_STAGE", "").strip().lower()
 
+INTERNAL_LINK_1_TITLE = os.getenv("INTERNAL_LINK_1_TITLE", "").strip()
+INTERNAL_LINK_1_URL = os.getenv("INTERNAL_LINK_1_URL", "").strip()
+INTERNAL_LINK_2_TITLE = os.getenv("INTERNAL_LINK_2_TITLE", "").strip()
+INTERNAL_LINK_2_URL = os.getenv("INTERNAL_LINK_2_URL", "").strip()
+INTERNAL_LINK_3_TITLE = os.getenv("INTERNAL_LINK_3_TITLE", "").strip()
+INTERNAL_LINK_3_URL = os.getenv("INTERNAL_LINK_3_URL", "").strip()
+
+DEFAULT_SEO_IMAGE_URL = os.getenv("DEFAULT_SEO_IMAGE_URL", "").strip()
+
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY가 필요합니다.")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -48,6 +57,7 @@ if FORCE_STAGE not in STAGE_TO_MARKET_TYPE:
     raise RuntimeError("FORCE_STAGE는 pre_open / intraday / close 중 하나여야 합니다.")
 
 MARKET_TYPE = STAGE_TO_MARKET_TYPE[FORCE_STAGE]
+AD_SHORTCODE = '[adinserter block="1"]'
 
 # =========================
 # 유틸
@@ -63,7 +73,7 @@ def safe_float(v: Any, default: Optional[float] = None) -> Optional[float]:
         if v is None:
             return default
         val = float(v)
-        if val != val:  # NaN
+        if val != val:
             return default
         return val
     except Exception:
@@ -86,6 +96,79 @@ def sanitize_text(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+def nl2br(text: str) -> str:
+    return str(text or "").replace("\n", "<br>")
+
+def esc_html(text: str) -> str:
+    return html.escape(str(text or ""), quote=True)
+
+def strip_to_plain_text(text: str) -> str:
+    return sanitize_text(text)
+
+def trim_chars(text: str, max_len: int) -> str:
+    text = str(text or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+def slugify_ko(text: str, max_len: int = 48) -> str:
+    text = sanitize_text(text).lower()
+    text = text.replace("%", "")
+    text = re.sub(r"[^\w가-힣\s\-]", "", text)
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text[:max_len].strip("-")
+
+# =========================
+# SEO 자산 생성
+# =========================
+def get_focus_keyword(stage: str) -> str:
+    if stage == "pre_open":
+        return "개장 전 브리핑"
+    if stage == "close":
+        return "장 마감 시황"
+    return "오전 시황"
+
+def build_seo_assets(stage: str, market_data: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, str]:
+    us = market_data.get("us_markets", {})
+    fx = market_data.get("fx", {})
+
+    sox_pct = us.get("sox", {}).get("pct")
+    usdkrw_close = fx.get("usdkrw", {}).get("close")
+
+    focus_keyword = get_focus_keyword(stage)
+
+    if stage == "pre_open":
+        title = f"{focus_keyword} | 미국 증시·SOX·원달러로 보는 오늘 주식시장 전망 5가지"
+        slug = slugify_ko("개장-전-브리핑-미국증시-sox-원달러")
+        meta_description = trim_chars(
+            f"{focus_keyword}입니다. 미국 증시와 SOX, 원달러 흐름을 바탕으로 오늘 주식시장 전망을 정리했습니다. "
+            f"SOX {fmt_pct(sox_pct)}, 원달러 {fmt_price(usdkrw_close)}원 흐름과 반도체 영향까지 빠르게 확인하세요.",
+            155
+        )
+    elif stage == "close":
+        title = f"{focus_keyword} | 코스피·코스닥 흐름과 내일 체크포인트 5가지"
+        slug = slugify_ko("장-마감-시황-코스피-코스닥-체크포인트")
+        meta_description = trim_chars(
+            f"{focus_keyword}입니다. 오늘 장 마감 요약과 코스피·코스닥 흐름, 강했던 업종과 약했던 업종, "
+            f"내일 체크포인트를 한 번에 정리했습니다.",
+            155
+        )
+    else:
+        title = f"{focus_keyword} | 코스피·코스닥 오전 흐름 핵심 정리"
+        slug = slugify_ko("오전-시황-코스피-코스닥-핵심")
+        meta_description = trim_chars(
+            f"{focus_keyword}입니다. 코스피와 코스닥 오전 흐름, 강세 업종과 약세 업종, 오후장 체크포인트를 빠르게 확인하세요.",
+            155
+        )
+
+    return {
+        "focus_keyword": focus_keyword,
+        "seo_title": title,
+        "slug": slug,
+        "meta_description": meta_description,
+    }
 
 # =========================
 # 시장 데이터
@@ -224,31 +307,8 @@ def build_news_texts(news_items: List[Dict[str, str]]) -> Dict[str, str]:
 def build_system_prompt(stage: str) -> str:
     common = """
 너는 한국 주식시장 시황 전문 에디터다.
-너는 구글 SEO 최적화 전문 블로거다.
 반드시 JSON만 출력해야 한다.
 설명 문장, 코드블록, 마크다운 없이 JSON 객체만 출력한다.
-
-목표
-- 구글 검색 상위 노출
-- 클릭률(CTR) 최대화
-- 체류시간 증가
-
-제목 규칙
-- 반드시 클릭 유도형
-- 핵심 키워드 앞쪽 배치
-- 숫자 or 이유 포함
-
-SEO 최적화 규칙
-- 핵심 키워드를 자연스럽게 5회 이상 포함
-- 글 길이 2000자 이상
-- 문장은 짧고 가독성 좋게
-
-클릭 유도 문자 포함
-- "지금 시장에서 가장 중요한 포인트는?"
-- "왜 반도체만 상승했을까?"
-- "오늘 반드시 체크해야 할 변수는?"
-
-출력 
 
 반드시 아래 키를 모두 포함하라:
 - one_line
@@ -268,7 +328,7 @@ SEO 최적화 규칙
 - 제공된 데이터만 근거로 사용할 것
 - 데이터가 없으면 없다고 솔직히 쓸 것
 """
-    
+
     if stage == "pre_open":
         return common + """
 이번 글은 "개장 전 브리핑"이다.
@@ -281,21 +341,9 @@ SEO 최적화 규칙
 - 함께 제공된 밤사이 핵심 뉴스 3개를 오늘 한국장 관점에서 연결해서 해석하라.
 - strong_sectors는 오늘 관심 업종, weak_sectors는 오늘 주의 업종으로 작성하라.
 - tomorrow_points는 장 시작 전 체크해야 할 포인트를 구체적으로 작성하라.
-- full_text는 아래 4개를 자연스럽게 포함해야 한다.
-  1) 미국장 요약
-  2) SOX/반도체 해석
-  3) 환율/수급 해석
-  4) 밤사이 핵심 뉴스 3개가 한국장에 미칠 영향
-
-SEO 규칙:
-- post_title은 검색형 제목으로 작성하라.
-- "개장 전 브리핑", "오늘 주식시장 전망", "미국 증시", "SOX", "원달러" 같은 핵심 표현을 자연스럽게 활용하라.
-- 제목은 너무 길지 않되 클릭할 이유가 있어야 한다.
-
-절대 금지:
-- 존재하지 않는 뉴스나 이벤트를 지어내지 말 것
-- 오전 장중 결과처럼 쓰지 말 것
-- 장 마감 총평처럼 쓰지 말 것
+- full_text는 900~1300자 수준으로 충분히 작성하라.
+- 본문 초반에 "개장 전 브리핑" 문구가 자연스럽게 들어가게 작성하라.
+- 포커스 키워드 밀도가 너무 낮지 않게 자연스럽게 반복하라.
 """
 
     if stage == "intraday":
@@ -305,10 +353,7 @@ SEO 규칙:
 핵심 규칙:
 - 오전 실제 흐름 중심으로 작성
 - 코스피/코스닥의 오전 움직임, 강세 업종, 약세 업종, 수급 분위기 중심
-- 개장 전 브리핑처럼 미국장 중심으로 길게 쓰지 말 것
-- 마감 총평처럼 하루 전체 결론으로 쓰지 말 것
-- tomorrow_points에는 오후장 체크 포인트를 작성
-- full_text는 오전 장세 해설이어야 함
+- full_text는 700자 이상으로 작성하라.
 """
 
     if stage == "close":
@@ -319,8 +364,8 @@ SEO 규칙:
 - 하루 전체를 정리하는 총평 형식으로 작성
 - 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
 - tomorrow_points에는 내일 체크 포인트를 작성
-- full_text는 오늘 시장을 한 번에 정리하는 마감 브리핑이어야 함
-- post_title은 워드프레스 발행용 제목으로 자연스럽고 클릭 가능한 제목으로 작성
+- full_text는 900~1300자 수준으로 충분히 작성하라.
+- 본문 초반에 "장 마감 시황" 문구가 자연스럽게 들어가게 작성하라.
 """
 
     raise ValueError(f"Unknown stage: {stage}")
@@ -442,6 +487,115 @@ def generate_summary(stage: str, market_data: Dict[str, Any], news_texts: Dict[s
     return result
 
 # =========================
+# 내부 링크 / 외부 링크 / FAQ schema
+# =========================
+def build_internal_links_html() -> str:
+    links = [
+        (INTERNAL_LINK_1_TITLE, INTERNAL_LINK_1_URL),
+        (INTERNAL_LINK_2_TITLE, INTERNAL_LINK_2_URL),
+        (INTERNAL_LINK_3_TITLE, INTERNAL_LINK_3_URL),
+    ]
+
+    valid_links = [(t, u) for t, u in links if t and u]
+    if not valid_links:
+        if WP_URL:
+            return f"""
+<h2 id="internal-links">개장 전 브리핑 관련 내부 링크</h2>
+<ul>
+  <li><a href="{esc_html(WP_URL.rstrip('/'))}">주식시장 전체 글 모아보기</a></li>
+</ul>
+""".strip()
+        return ""
+
+    items = "\n".join(
+        [f'<li><a href="{esc_html(url)}">{esc_html(title)}</a></li>' for title, url in valid_links]
+    )
+
+    return f"""
+<h2 id="internal-links">개장 전 브리핑 관련 내부 링크</h2>
+<ul>
+{items}
+</ul>
+""".strip()
+
+def build_external_links_html(stage: str) -> str:
+    if stage == "pre_open":
+        return """
+<h2 id="external-links">외부 참고 자료</h2>
+<ul>
+  <li><a href="https://www.nasdaq.com/market-activity/index/comp" target="_blank">Nasdaq Composite 공식 페이지</a></li>
+  <li><a href="https://www.krx.co.kr/" target="_blank">KRX 한국거래소 공식 사이트</a></li>
+  <li><a href="https://www.federalreserve.gov/" target="_blank">미 연준 공식 사이트</a></li>
+</ul>
+""".strip()
+
+    return """
+<h2 id="external-links">외부 참고 자료</h2>
+<ul>
+  <li><a href="https://www.krx.co.kr/" target="_blank">KRX 한국거래소 공식 사이트</a></li>
+  <li><a href="https://www.federalreserve.gov/" target="_blank">미 연준 공식 사이트</a></li>
+</ul>
+""".strip()
+
+def build_faq_schema_html(faqs: List[Tuple[str, str]]) -> str:
+    if not faqs:
+        return ""
+
+    schema = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": q,
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": a
+                }
+            }
+            for q, a in faqs
+        ]
+    }
+
+    return f'<script type="application/ld+json">{json.dumps(schema, ensure_ascii=False)}</script>'
+
+def build_toc_html(stage: str, focus_keyword: str) -> str:
+    if stage == "pre_open":
+        return f"""
+<div class="seo-toc">
+  <h2 id="toc">{focus_keyword} 목차</h2>
+  <ul>
+    <li><a href="#summary">{focus_keyword} 핵심 요약</a></li>
+    <li><a href="#us-market">{focus_keyword} 미국 증시 정리</a></li>
+    <li><a href="#sox-impact">{focus_keyword} SOX와 반도체 영향</a></li>
+    <li><a href="#news-top3">{focus_keyword} 밤사이 핵심 뉴스 3개</a></li>
+    <li><a href="#check-points">{focus_keyword} 장 시작 전 체크 포인트</a></li>
+    <li><a href="#internal-links">{focus_keyword} 관련 내부 링크</a></li>
+  </ul>
+</div>
+""".strip()
+
+    return f"""
+<div class="seo-toc">
+  <h2 id="toc">{focus_keyword} 목차</h2>
+  <ul>
+    <li><a href="#summary">{focus_keyword} 요약</a></li>
+    <li><a href="#kospi-close">{focus_keyword} 코스피 해설</a></li>
+    <li><a href="#kosdaq-close">{focus_keyword} 코스닥 해설</a></li>
+    <li><a href="#check-points">{focus_keyword} 내일 체크 포인트</a></li>
+    <li><a href="#internal-links">{focus_keyword} 관련 내부 링크</a></li>
+  </ul>
+</div>
+""".strip()
+
+def build_image_html(focus_keyword: str) -> str:
+    if not DEFAULT_SEO_IMAGE_URL:
+        return ""
+    return f'''
+<p><img src="{esc_html(DEFAULT_SEO_IMAGE_URL)}" alt="{esc_html(focus_keyword)}" style="max-width:100%;height:auto;" /></p>
+'''.strip()
+
+# =========================
 # Supabase 저장
 # =========================
 def upsert_summary(row: Dict[str, Any]) -> None:
@@ -473,9 +627,9 @@ def upsert_summary(row: Dict[str, Any]) -> None:
         print("[upsert_summary] inserted new row")
 
 # =========================
-# WordPress 발행
+# WordPress 발행 HTML
 # =========================
-def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str]) -> str:
+def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], seo: Dict[str, str]) -> str:
     us = market_data.get("us_markets", {})
     fx = market_data.get("fx", {})
 
@@ -485,18 +639,52 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
     sox = us.get("sox", {})
     usdkrw = fx.get("usdkrw", {})
 
-    full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
-    tomorrow_html = str(summary.get("tomorrow_points", "")).replace("\n", "<br>")
+    focus_keyword = seo["focus_keyword"]
+    full_text_html = nl2br(summary.get("full_text", ""))
+    tomorrow_html = nl2br(summary.get("tomorrow_points", ""))
+
+    faqs = [
+        (
+            "오늘 한국 증시는 어떤 흐름으로 출발할 가능성이 있나요?",
+            "오늘 한국 증시는 미국 증시와 SOX, 원달러 환율 흐름의 영향을 받을 가능성이 큽니다. 특히 나스닥과 SOX 움직임은 반도체와 AI 관련주 방향에 직접적인 힌트를 줄 수 있습니다."
+        ),
+        (
+            "원달러 환율은 왜 중요한가요?",
+            "원달러 환율은 외국인 수급과 성장주 심리에 영향을 줄 수 있습니다. 환율이 안정되면 위험자산 선호가 개선될 수 있지만 다시 급등하면 변동성이 커질 수 있습니다."
+        ),
+        (
+            "개장 전에 가장 먼저 체크해야 할 것은 무엇인가요?",
+            "개장 전에는 미국 증시 마감 흐름, SOX, 원달러 환율, 밤사이 핵심 뉴스 3개, 그리고 장 시작 직후 외국인 수급 변화를 함께 보는 것이 좋습니다."
+        ),
+    ]
+
+    faq_schema = build_faq_schema_html(faqs)
+    internal_links_html = build_internal_links_html()
+    external_links_html = build_external_links_html("pre_open")
+    toc_html = build_toc_html("pre_open", focus_keyword)
+    image_html = build_image_html(focus_keyword)
+
+    intro = (
+        f"{focus_keyword}입니다. 미국 증시와 SOX, 원달러 환율, 밤사이 핵심 뉴스 3개를 바탕으로 "
+        f"오늘 주식시장 전망을 정리했습니다. 이번 {focus_keyword}에서는 반도체와 AI 관련주, "
+        f"외국인 수급, 환율 민감 업종까지 함께 살펴봅니다."
+    )
 
     return f"""
-<h1>{summary.get('post_title', '')}</h1>
+<h1>{esc_html(seo['seo_title'])}</h1>
 
-<p><strong>{summary.get('one_line', '')}</strong></p>
+<p><strong>{esc_html(intro)}</strong></p>
 
-<h2>오늘 주식시장 전망 한눈에 보기</h2>
+{image_html}
+
+<p>{AD_SHORTCODE}</p>
+
+{toc_html}
+
+<h2 id="summary">{esc_html(focus_keyword)} 핵심 요약</h2>
 <p>{full_text_html}</p>
 
-<h2>밤사이 미국 증시 마감 정리</h2>
+<h2 id="us-market">{esc_html(focus_keyword)} 미국 증시 정리</h2>
 <ul>
   <li>다우: {fmt_price(dow.get('close'))} ({fmt_pct(dow.get('pct'))})</li>
   <li>S&amp;P500: {fmt_price(sp500.get('close'))} ({fmt_pct(sp500.get('pct'))})</li>
@@ -505,66 +693,132 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
   <li>원/달러: {fmt_price(usdkrw.get('close'))} ({fmt_pct(usdkrw.get('pct'))})</li>
 </ul>
 
-<h2>반도체와 SOX 흐름, 한국 증시에 어떤 영향이 있을까</h2>
-<p>{summary.get('strong_sectors', '')}</p>
+<h2 id="sox-impact">{esc_html(focus_keyword)} SOX와 반도체 영향</h2>
+<p>{esc_html(summary.get('strong_sectors', ''))}</p>
+<p>{esc_html(focus_keyword)} 관점에서 보면 SOX와 나스닥 흐름은 국내 반도체와 AI 관련주의 방향을 읽는 데 중요합니다. 이번 {esc_html(focus_keyword)}에서도 이 부분을 핵심으로 봅니다.</p>
 
-<h2>밤사이 핵심 뉴스 3개</h2>
+<h2 id="news-top3">{esc_html(focus_keyword)} 밤사이 핵심 뉴스 3개</h2>
 <ol>
-  <li>{news_texts.get('news_1', '')}</li>
-  <li>{news_texts.get('news_2', '')}</li>
-  <li>{news_texts.get('news_3', '')}</li>
+  <li>{esc_html(news_texts.get('news_1', ''))}</li>
+  <li>{esc_html(news_texts.get('news_2', ''))}</li>
+  <li>{esc_html(news_texts.get('news_3', ''))}</li>
 </ol>
 
-<h2>오늘 관심 업종</h2>
-<p>{summary.get('strong_sectors', '')}</p>
+<p>{AD_SHORTCODE}</p>
 
-<h2>오늘 주의 업종</h2>
-<p>{summary.get('weak_sectors', '')}</p>
+<h2>{esc_html(focus_keyword)} 오늘 관심 업종</h2>
+<p>{esc_html(summary.get('strong_sectors', ''))}</p>
 
-<h2>장 시작 전 체크 포인트</h2>
+<h2>{esc_html(focus_keyword)} 오늘 주의 업종</h2>
+<p>{esc_html(summary.get('weak_sectors', ''))}</p>
+
+<h2 id="check-points">{esc_html(focus_keyword)} 장 시작 전 체크 포인트</h2>
 <p>{tomorrow_html}</p>
 
-<h2>코스피 전망</h2>
-<p>{summary.get('kospi_text', '')}</p>
+<h2>{esc_html(focus_keyword)} 코스피 전망</h2>
+<p>{esc_html(summary.get('kospi_text', ''))}</p>
 
-<h2>코스닥 전망</h2>
-<p>{summary.get('kosdaq_text', '')}</p>
+<h2>{esc_html(focus_keyword)} 코스닥 전망</h2>
+<p>{esc_html(summary.get('kosdaq_text', ''))}</p>
+
+<h2>자주 묻는 질문</h2>
+<h3>{esc_html(faqs[0][0])}</h3>
+<p>{esc_html(faqs[0][1])}</p>
+
+<h3>{esc_html(faqs[1][0])}</h3>
+<p>{esc_html(faqs[1][1])}</p>
+
+<h3>{esc_html(faqs[2][0])}</h3>
+<p>{esc_html(faqs[2][1])}</p>
+
+{internal_links_html}
+
+{external_links_html}
+
+{faq_schema}
 """.strip()
 
-def build_close_html(summary: Dict[str, Any]) -> str:
-    full_text_html = str(summary.get("full_text", "")).replace("\n", "<br>")
-    tomorrow_html = str(summary.get("tomorrow_points", "")).replace("\n", "<br>")
+def build_close_html(summary: Dict[str, Any], seo: Dict[str, str]) -> str:
+    focus_keyword = seo["focus_keyword"]
+    full_text_html = nl2br(summary.get("full_text", ""))
+    tomorrow_html = nl2br(summary.get("tomorrow_points", ""))
+
+    faqs = [
+        (
+            "오늘 장 마감에서 가장 중요했던 포인트는 무엇인가요?",
+            "오늘 장 마감에서는 코스피와 코스닥 흐름, 강했던 업종과 약했던 업종, 그리고 내일로 이어질 수 있는 수급 변화가 핵심 포인트입니다."
+        ),
+        (
+            "내일 시장을 볼 때 가장 먼저 확인해야 할 것은 무엇인가요?",
+            "내일 시장은 미국 증시, 환율, 외국인 수급, 업종별 강도 변화를 먼저 확인하는 것이 좋습니다."
+        ),
+    ]
+
+    faq_schema = build_faq_schema_html(faqs)
+    internal_links_html = build_internal_links_html()
+    external_links_html = build_external_links_html("close")
+    toc_html = build_toc_html("close", focus_keyword)
+    image_html = build_image_html(focus_keyword)
+
+    intro = (
+        f"{focus_keyword}입니다. 오늘 장 마감 흐름과 코스피, 코스닥, 강했던 업종과 약했던 업종, "
+        f"그리고 내일 체크포인트까지 한 번에 정리했습니다."
+    )
 
     return f"""
-<h1>{summary.get('post_title', '')}</h1>
+<h1>{esc_html(seo['seo_title'])}</h1>
 
-<p><strong>{summary.get('one_line', '')}</strong></p>
+<p><strong>{esc_html(intro)}</strong></p>
 
-<h2>오늘 장 마감 요약</h2>
+{image_html}
+
+<p>{AD_SHORTCODE}</p>
+
+{toc_html}
+
+<h2 id="summary">{esc_html(focus_keyword)} 요약</h2>
 <p>{full_text_html}</p>
 
-<h2>코스피 마감 해설</h2>
-<p>{summary.get('kospi_text', '')}</p>
+<h2 id="kospi-close">{esc_html(focus_keyword)} 코스피 해설</h2>
+<p>{esc_html(summary.get('kospi_text', ''))}</p>
 
-<h2>코스닥 마감 해설</h2>
-<p>{summary.get('kosdaq_text', '')}</p>
+<h2 id="kosdaq-close">{esc_html(focus_keyword)} 코스닥 해설</h2>
+<p>{esc_html(summary.get('kosdaq_text', ''))}</p>
 
-<h2>강했던 업종</h2>
-<p>{summary.get('strong_sectors', '')}</p>
+<h2>{esc_html(focus_keyword)} 강했던 업종</h2>
+<p>{esc_html(summary.get('strong_sectors', ''))}</p>
 
-<h2>약했던 업종</h2>
-<p>{summary.get('weak_sectors', '')}</p>
+<h2>{esc_html(focus_keyword)} 약했던 업종</h2>
+<p>{esc_html(summary.get('weak_sectors', ''))}</p>
 
-<h2>내일 체크 포인트</h2>
+<p>{AD_SHORTCODE}</p>
+
+<h2 id="check-points">{esc_html(focus_keyword)} 내일 체크 포인트</h2>
 <p>{tomorrow_html}</p>
+
+<h2>자주 묻는 질문</h2>
+<h3>{esc_html(faqs[0][0])}</h3>
+<p>{esc_html(faqs[0][1])}</p>
+
+<h3>{esc_html(faqs[1][0])}</h3>
+<p>{esc_html(faqs[1][1])}</p>
+
+{internal_links_html}
+
+{external_links_html}
+
+{faq_schema}
 """.strip()
 
-def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str) -> str:
+def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str, seo: Dict[str, str]) -> str:
     if stage == "pre_open":
-        return build_preopen_html(summary, market_data, news_texts)
-    return build_close_html(summary)
+        return build_preopen_html(summary, market_data, news_texts, seo)
+    return build_close_html(summary, seo)
 
-def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str) -> Tuple[str, str]:
+# =========================
+# WordPress 발행
+# =========================
+def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str, seo: Dict[str, str]) -> Tuple[str, str]:
     if not WP_URL:
         raise RuntimeError("WP_URL/WP_SITE_URL이 비어 있습니다.")
     if not WP_USERNAME:
@@ -575,11 +829,17 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
     endpoint = f"{WP_URL.rstrip('/')}/wp-json/wp/v2/posts"
     auth = (WP_USERNAME, WP_APP_PASSWORD)
 
-    payload = {
-        "title": summary["post_title"],
-        "content": build_wp_html(summary, market_data, news_texts, stage),
-        "status": "publish",
-    }
+    form_data = [
+        ("title", seo["seo_title"]),
+        ("content", build_wp_html(summary, market_data, news_texts, stage, seo)),
+        ("status", "publish"),
+        ("slug", seo["slug"]),
+        ("excerpt", seo["meta_description"]),
+        ("meta[rank_math_description]", seo["meta_description"]),
+        ("meta[rank_math_focus_keyword]", seo["focus_keyword"]),
+        ("meta[_yoast_wpseo_metadesc]", seo["meta_description"]),
+        ("meta[_aioseo_description]", seo["meta_description"]),
+    ]
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -587,12 +847,15 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
     }
 
     print("[publish_wordpress] endpoint:", endpoint)
-    print("[publish_wordpress] title:", summary["post_title"])
+    print("[publish_wordpress] title:", seo["seo_title"])
+    print("[publish_wordpress] slug:", seo["slug"])
+    print("[publish_wordpress] meta_description:", seo["meta_description"])
+    print("[publish_wordpress] focus_keyword:", seo["focus_keyword"])
 
     res = requests.post(
         endpoint,
         auth=auth,
-        data=payload,
+        data=form_data,
         headers=headers,
         timeout=30,
     )
@@ -606,7 +869,7 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
     wp_title = (
         data.get("title", {}).get("rendered")
         if isinstance(data.get("title"), dict)
-        else summary["post_title"]
+        else seo["seo_title"]
     )
     wp_link = data.get("link") or ""
 
@@ -614,7 +877,7 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
         raise RuntimeError("워드프레스 응답에 link가 없습니다.")
 
     print("[publish_wordpress] success link:", wp_link)
-    return wp_title or summary["post_title"], wp_link
+    return wp_title or seo["seo_title"], wp_link
 
 # =========================
 # 메인
@@ -636,6 +899,10 @@ def main() -> None:
     print("[summary]")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
+    seo = build_seo_assets(FORCE_STAGE, market_data, summary)
+    print("[seo]")
+    print(json.dumps(seo, ensure_ascii=False, indent=2))
+
     us = market_data.get("us_markets", {})
     fx = market_data.get("fx", {})
 
@@ -655,7 +922,7 @@ def main() -> None:
     post_url = ""
 
     if FORCE_STAGE in ("pre_open", "close"):
-        wp_title, wp_link = publish_wordpress(summary, market_data, news_texts, FORCE_STAGE)
+        wp_title, wp_link = publish_wordpress(summary, market_data, news_texts, FORCE_STAGE, seo)
         post_title = wp_title
         post_url = wp_link
 
