@@ -343,7 +343,6 @@ def build_system_prompt(stage: str) -> str:
 - tomorrow_points는 장 시작 전 체크해야 할 포인트를 구체적으로 작성하라.
 - full_text는 900~1300자 수준으로 충분히 작성하라.
 - 본문 초반에 "개장 전 브리핑" 문구가 자연스럽게 들어가게 작성하라.
-- 포커스 키워드 밀도가 너무 낮지 않게 자연스럽게 반복하라.
 """
 
     if stage == "intraday":
@@ -860,11 +859,35 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
         timeout=30,
     )
 
+    response_text = res.text[:3000]
+
     print("[publish_wordpress] status:", res.status_code)
-    print("[publish_wordpress] response text:", res.text[:1000])
+    print("[publish_wordpress] response text:", response_text)
+
+    # Imunify360 / bot protection 감지
+    lowered = response_text.lower()
+    if "imunify360" in lowered or "bot-protection" in lowered or "access denied" in lowered:
+        raise RuntimeError(
+            "호스팅 보안(Imunify360)이 WordPress REST API 자동 발행 요청을 차단했습니다. "
+            "/wp-json/wp/v2/posts 또는 /wp-json/wp/v2/* 경로에 대해 bot-protection 예외 처리나 "
+            "Application Password 인증 REST 요청 허용이 필요합니다."
+        )
 
     res.raise_for_status()
-    data = res.json()
+
+    try:
+        data = res.json()
+    except Exception:
+        raise RuntimeError(f"워드프레스 응답이 JSON 형식이 아닙니다. 응답 일부: {response_text[:500]}")
+
+    if isinstance(data, dict) and data.get("message"):
+        # 차단/오류 메시지 상세 출력
+        msg = str(data.get("message", "")).strip()
+        if "Imunify360" in msg or "bot-protection" in msg or "Access denied" in msg:
+            raise RuntimeError(
+                "호스팅 보안(Imunify360)이 WordPress REST API 자동 발행 요청을 차단했습니다. "
+                "/wp-json/wp/v2/posts 경로 예외 처리 또는 자동화 IP/요청 허용이 필요합니다."
+            )
 
     wp_title = (
         data.get("title", {}).get("rendered")
@@ -874,7 +897,9 @@ def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news
     wp_link = data.get("link") or ""
 
     if not wp_link:
-        raise RuntimeError("워드프레스 응답에 link가 없습니다.")
+        raise RuntimeError(
+            f"워드프레스 응답에 link가 없습니다. 응답 일부: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
 
     print("[publish_wordpress] success link:", wp_link)
     return wp_title or seo["seo_title"], wp_link
