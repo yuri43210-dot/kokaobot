@@ -57,6 +57,7 @@ if FORCE_STAGE not in STAGE_TO_MARKET_TYPE:
     raise RuntimeError("FORCE_STAGE는 pre_open / intraday / close 중 하나여야 합니다.")
 
 MARKET_TYPE = STAGE_TO_MARKET_TYPE[FORCE_STAGE]
+AD_SHORTCODE = '[adinserter block="1"]'
 
 # =========================
 # 유틸
@@ -338,6 +339,7 @@ def build_system_prompt(stage: str) -> str:
 - strong_sectors는 오늘 관심 업종, weak_sectors는 오늘 주의 업종으로 작성하라.
 - tomorrow_points는 장 시작 전 체크해야 할 포인트를 구체적으로 작성하라.
 - full_text는 900~1300자 수준으로 충분히 작성하라.
+- 본문 초반에 "개장 전 브리핑" 문구가 자연스럽게 들어가게 작성하라.
 """
 
     if stage == "intraday":
@@ -359,6 +361,7 @@ def build_system_prompt(stage: str) -> str:
 - 코스피/코스닥 마감 흐름, 강세 업종, 약세 업종, 하루 해석을 담을 것
 - tomorrow_points에는 내일 체크 포인트를 작성
 - full_text는 900~1300자 수준으로 충분히 작성하라.
+- 본문 초반에 "장 마감 시황" 문구가 자연스럽게 들어가게 작성하라.
 """
 
     raise ValueError(f"Unknown stage: {stage}")
@@ -482,7 +485,7 @@ def generate_summary(stage: str, market_data: Dict[str, Any], news_texts: Dict[s
 # =========================
 # 내부 링크 / 외부 링크
 # =========================
-def build_internal_links_html() -> str:
+def build_internal_links_html(focus_keyword: str) -> str:
     links = [
         (INTERNAL_LINK_1_TITLE, INTERNAL_LINK_1_URL),
         (INTERNAL_LINK_2_TITLE, INTERNAL_LINK_2_URL),
@@ -493,7 +496,7 @@ def build_internal_links_html() -> str:
     if not valid_links:
         if WP_URL:
             return f"""
-<h2 id="internal-links">개장 전 브리핑 관련 내부 링크</h2>
+<h2 id="internal-links">{esc_html(focus_keyword)} 관련 내부 링크</h2>
 <ul>
   <li><a href="{esc_html(WP_URL.rstrip('/'))}">주식시장 전체 글 모아보기</a></li>
 </ul>
@@ -505,7 +508,7 @@ def build_internal_links_html() -> str:
     )
 
     return f"""
-<h2 id="internal-links">개장 전 브리핑 관련 내부 링크</h2>
+<h2 id="internal-links">{esc_html(focus_keyword)} 관련 내부 링크</h2>
 <ul>
 {items}
 </ul>
@@ -534,27 +537,27 @@ def build_toc_html(stage: str, focus_keyword: str) -> str:
     if stage == "pre_open":
         return f"""
 <div class="seo-toc">
-  <h2 id="toc">{focus_keyword} 목차</h2>
+  <h2 id="toc">{esc_html(focus_keyword)} 목차</h2>
   <ul>
-    <li><a href="#summary">{focus_keyword} 핵심 요약</a></li>
-    <li><a href="#us-market">{focus_keyword} 미국 증시 정리</a></li>
-    <li><a href="#sox-impact">{focus_keyword} SOX와 반도체 영향</a></li>
-    <li><a href="#news-top3">{focus_keyword} 밤사이 핵심 뉴스 3개</a></li>
-    <li><a href="#check-points">{focus_keyword} 장 시작 전 체크 포인트</a></li>
-    <li><a href="#internal-links">{focus_keyword} 관련 내부 링크</a></li>
+    <li><a href="#summary">{esc_html(focus_keyword)} 핵심 요약</a></li>
+    <li><a href="#us-market">{esc_html(focus_keyword)} 미국 증시 정리</a></li>
+    <li><a href="#sox-impact">{esc_html(focus_keyword)} SOX와 반도체 영향</a></li>
+    <li><a href="#news-top3">{esc_html(focus_keyword)} 밤사이 핵심 뉴스 3개</a></li>
+    <li><a href="#check-points">{esc_html(focus_keyword)} 장 시작 전 체크 포인트</a></li>
+    <li><a href="#internal-links">{esc_html(focus_keyword)} 관련 내부 링크</a></li>
   </ul>
 </div>
 """.strip()
 
     return f"""
 <div class="seo-toc">
-  <h2 id="toc">{focus_keyword} 목차</h2>
+  <h2 id="toc">{esc_html(focus_keyword)} 목차</h2>
   <ul>
-    <li><a href="#summary">{focus_keyword} 요약</a></li>
-    <li><a href="#kospi-close">{focus_keyword} 코스피 해설</a></li>
-    <li><a href="#kosdaq-close">{focus_keyword} 코스닥 해설</a></li>
-    <li><a href="#check-points">{focus_keyword} 내일 체크 포인트</a></li>
-    <li><a href="#internal-links">{focus_keyword} 관련 내부 링크</a></li>
+    <li><a href="#summary">{esc_html(focus_keyword)} 요약</a></li>
+    <li><a href="#kospi-close">{esc_html(focus_keyword)} 코스피 해설</a></li>
+    <li><a href="#kosdaq-close">{esc_html(focus_keyword)} 코스닥 해설</a></li>
+    <li><a href="#check-points">{esc_html(focus_keyword)} 내일 체크 포인트</a></li>
+    <li><a href="#internal-links">{esc_html(focus_keyword)} 관련 내부 링크</a></li>
   </ul>
 </div>
 """.strip()
@@ -614,7 +617,7 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
     full_text_html = nl2br(summary.get("full_text", ""))
     tomorrow_html = nl2br(summary.get("tomorrow_points", ""))
 
-    internal_links_html = build_internal_links_html()
+    internal_links_html = build_internal_links_html(focus_keyword)
     external_links_html = build_external_links_html("pre_open")
     toc_html = build_toc_html("pre_open", focus_keyword)
     image_html = build_image_html(focus_keyword)
@@ -629,6 +632,8 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
 <p><strong>{esc_html(intro)}</strong></p>
 
 {image_html}
+
+<p>{AD_SHORTCODE}</p>
 
 {toc_html}
 
@@ -655,6 +660,8 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
   <li>{esc_html(news_texts.get('news_3', ''))}</li>
 </ol>
 
+<p>{AD_SHORTCODE}</p>
+
 <h2>{esc_html(focus_keyword)} 오늘 관심 업종</h2>
 <p>{esc_html(summary.get('strong_sectors', ''))}</p>
 
@@ -668,3 +675,237 @@ def build_preopen_html(summary: Dict[str, Any], market_data: Dict[str, Any], new
 <p>{esc_html(summary.get('kospi_text', ''))}</p>
 
 <h2>{esc_html(focus_keyword)} 코스닥 전망</h2>
+<p>{esc_html(summary.get('kosdaq_text', ''))}</p>
+
+<h2>자주 묻는 질문</h2>
+<h3>오늘 한국 증시는 어떤 흐름으로 출발할 가능성이 있나요?</h3>
+<p>오늘 한국 증시는 미국 증시와 SOX, 원달러 환율 흐름의 영향을 받을 가능성이 큽니다. 특히 나스닥과 SOX 움직임은 반도체와 AI 관련주 방향에 직접적인 힌트를 줄 수 있습니다.</p>
+
+<h3>원달러 환율은 왜 중요한가요?</h3>
+<p>원달러 환율은 외국인 수급과 성장주 심리에 영향을 줄 수 있습니다. 환율이 안정되면 위험자산 선호가 개선될 수 있지만 다시 급등하면 변동성이 커질 수 있습니다.</p>
+
+<h3>개장 전에 가장 먼저 체크해야 할 것은 무엇인가요?</h3>
+<p>개장 전에는 미국 증시 마감 흐름, SOX, 원달러 환율, 밤사이 핵심 뉴스 3개, 그리고 장 시작 직후 외국인 수급 변화를 함께 보는 것이 좋습니다.</p>
+
+{internal_links_html}
+
+{external_links_html}
+""".strip()
+
+def build_close_html(summary: Dict[str, Any], seo: Dict[str, str]) -> str:
+    focus_keyword = seo["focus_keyword"]
+    full_text_html = nl2br(summary.get("full_text", ""))
+    tomorrow_html = nl2br(summary.get("tomorrow_points", ""))
+
+    internal_links_html = build_internal_links_html(focus_keyword)
+    external_links_html = build_external_links_html("close")
+    toc_html = build_toc_html("close", focus_keyword)
+    image_html = build_image_html(focus_keyword)
+
+    intro = (
+        f"{focus_keyword}입니다. 오늘 장 마감 흐름과 코스피, 코스닥, 강했던 업종과 약했던 업종, "
+        f"그리고 내일 체크포인트까지 한 번에 정리했습니다."
+    )
+
+    return f"""
+<p><strong>{esc_html(intro)}</strong></p>
+
+{image_html}
+
+<p>{AD_SHORTCODE}</p>
+
+{toc_html}
+
+<h2 id="summary">{esc_html(focus_keyword)} 요약</h2>
+<p>{full_text_html}</p>
+
+<h2 id="kospi-close">{esc_html(focus_keyword)} 코스피 해설</h2>
+<p>{esc_html(summary.get('kospi_text', ''))}</p>
+
+<h2 id="kosdaq-close">{esc_html(focus_keyword)} 코스닥 해설</h2>
+<p>{esc_html(summary.get('kosdaq_text', ''))}</p>
+
+<h2>{esc_html(focus_keyword)} 강했던 업종</h2>
+<p>{esc_html(summary.get('strong_sectors', ''))}</p>
+
+<h2>{esc_html(focus_keyword)} 약했던 업종</h2>
+<p>{esc_html(summary.get('weak_sectors', ''))}</p>
+
+<p>{AD_SHORTCODE}</p>
+
+<h2 id="check-points">{esc_html(focus_keyword)} 내일 체크 포인트</h2>
+<p>{tomorrow_html}</p>
+
+<h2>자주 묻는 질문</h2>
+<h3>오늘 장 마감에서 가장 중요했던 포인트는 무엇인가요?</h3>
+<p>오늘 장 마감에서는 코스피와 코스닥 흐름, 강했던 업종과 약했던 업종, 그리고 내일로 이어질 수 있는 수급 변화가 핵심 포인트입니다.</p>
+
+<h3>내일 시장을 볼 때 가장 먼저 확인해야 할 것은 무엇인가요?</h3>
+<p>내일 시장은 미국 증시, 환율, 외국인 수급, 업종별 강도 변화를 먼저 확인하는 것이 좋습니다.</p>
+
+{internal_links_html}
+
+{external_links_html}
+""".strip()
+
+def build_wp_html(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str, seo: Dict[str, str]) -> str:
+    if stage == "pre_open":
+        return build_preopen_html(summary, market_data, news_texts, seo)
+    return build_close_html(summary, seo)
+
+# =========================
+# WordPress 발행
+# =========================
+def publish_wordpress(summary: Dict[str, Any], market_data: Dict[str, Any], news_texts: Dict[str, str], stage: str, seo: Dict[str, str]) -> Tuple[str, str]:
+    if not WP_URL:
+        raise RuntimeError("WP_URL/WP_SITE_URL이 비어 있습니다.")
+    if not WP_USERNAME:
+        raise RuntimeError("WP_USERNAME이 비어 있습니다.")
+    if not WP_APP_PASSWORD:
+        raise RuntimeError("WP_APP_PASSWORD가 비어 있습니다.")
+
+    endpoint = f"{WP_URL.rstrip('/')}/wp-json/wp/v2/posts"
+    auth = (WP_USERNAME, WP_APP_PASSWORD)
+
+    form_data = [
+        ("title", seo["seo_title"]),
+        ("content", build_wp_html(summary, market_data, news_texts, stage, seo)),
+        ("status", "publish"),
+        ("slug", seo["slug"]),
+        ("excerpt", seo["meta_description"]),
+        ("meta[rank_math_description]", seo["meta_description"]),
+        ("meta[rank_math_focus_keyword]", seo["focus_keyword"]),
+        ("meta[_yoast_wpseo_metadesc]", seo["meta_description"]),
+        ("meta[_aioseo_description]", seo["meta_description"]),
+    ]
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+
+    print("[publish_wordpress] endpoint:", endpoint)
+    print("[publish_wordpress] title:", seo["seo_title"])
+    print("[publish_wordpress] slug:", seo["slug"])
+    print("[publish_wordpress] meta_description:", seo["meta_description"])
+    print("[publish_wordpress] focus_keyword:", seo["focus_keyword"])
+
+    res = requests.post(
+        endpoint,
+        auth=auth,
+        data=form_data,
+        headers=headers,
+        timeout=30,
+    )
+
+    response_text = res.text[:3000]
+
+    print("[publish_wordpress] status:", res.status_code)
+    print("[publish_wordpress] response text:", response_text)
+
+    lowered = response_text.lower()
+    if "imunify360" in lowered or "bot-protection" in lowered or "access denied" in lowered:
+        raise RuntimeError(
+            "호스팅 보안(Imunify360)이 WordPress REST API 자동 발행 요청을 차단했습니다. "
+            "/wp-json/wp/v2/posts 또는 /wp-json/wp/v2/* 경로에 대해 bot-protection 예외 처리나 "
+            "Application Password 인증 REST 요청 허용이 필요합니다."
+        )
+
+    res.raise_for_status()
+
+    try:
+        data = res.json()
+    except Exception:
+        raise RuntimeError(f"워드프레스 응답이 JSON 형식이 아닙니다. 응답 일부: {response_text[:500]}")
+
+    wp_title = (
+        data.get("title", {}).get("rendered")
+        if isinstance(data.get("title"), dict)
+        else seo["seo_title"]
+    )
+    wp_link = data.get("link") or ""
+
+    if not wp_link:
+        raise RuntimeError(
+            f"워드프레스 응답에 link가 없습니다. 응답 일부: {json.dumps(data, ensure_ascii=False)[:500]}"
+        )
+
+    print("[publish_wordpress] success link:", wp_link)
+    return wp_title or seo["seo_title"], wp_link
+
+# =========================
+# 메인
+# =========================
+def main() -> None:
+    print(f"[START] FORCE_STAGE={FORCE_STAGE}, MARKET_TYPE={MARKET_TYPE}, date={today_str()}")
+
+    market_data = collect_market_data()
+    print("[market_data]")
+    print(json.dumps(market_data, ensure_ascii=False, indent=2))
+
+    news_items = collect_market_news_top3() if FORCE_STAGE == "pre_open" else []
+    news_texts = build_news_texts(news_items)
+
+    print("[news_texts]")
+    print(json.dumps(news_texts, ensure_ascii=False, indent=2))
+
+    summary = generate_summary(FORCE_STAGE, market_data, news_texts)
+    print("[summary]")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    seo = build_seo_assets(FORCE_STAGE, market_data, summary)
+    print("[seo]")
+    print(json.dumps(seo, ensure_ascii=False, indent=2))
+
+    us = market_data.get("us_markets", {})
+    fx = market_data.get("fx", {})
+
+    dow = us.get("dow", {})
+    sp500 = us.get("sp500", {})
+    nasdaq = us.get("nasdaq", {})
+    sox = us.get("sox", {})
+    usdkrw = fx.get("usdkrw", {})
+
+    dow_text = f"{fmt_price(dow.get('close'))} ({fmt_pct(dow.get('pct'))})"
+    sp500_text = f"{fmt_price(sp500.get('close'))} ({fmt_pct(sp500.get('pct'))})"
+    nasdaq_text = f"{fmt_price(nasdaq.get('close'))} ({fmt_pct(nasdaq.get('pct'))})"
+    sox_text = f"{fmt_price(sox.get('close'))} ({fmt_pct(sox.get('pct'))})"
+    usdkrw_text = f"{fmt_price(usdkrw.get('close'))}원 ({fmt_pct(usdkrw.get('pct'))})"
+
+    post_title = summary.get("post_title", "")
+    post_url = ""
+
+    if FORCE_STAGE in ("pre_open", "close"):
+        wp_title, wp_link = publish_wordpress(summary, market_data, news_texts, FORCE_STAGE, seo)
+        post_title = wp_title
+        post_url = wp_link
+
+    row = {
+        "summary_date": today_str(),
+        "market_type": MARKET_TYPE,
+        "one_line": summary.get("one_line", ""),
+        "kospi_text": summary.get("kospi_text", ""),
+        "kosdaq_text": summary.get("kosdaq_text", ""),
+        "strong_sectors": summary.get("strong_sectors", ""),
+        "weak_sectors": summary.get("weak_sectors", ""),
+        "tomorrow_points": summary.get("tomorrow_points", ""),
+        "full_text": summary.get("full_text", ""),
+        "post_title": post_title,
+        "post_url": post_url,
+        "updated_at": now_kst().isoformat(),
+
+        "dow_text": dow_text,
+        "sp500_text": sp500_text,
+        "nasdaq_text": nasdaq_text,
+        "sox_text": sox_text,
+        "usdkrw_text": usdkrw_text,
+        "news_1": news_texts.get("news_1", ""),
+        "news_2": news_texts.get("news_2", ""),
+        "news_3": news_texts.get("news_3", ""),
+    }
+
+    upsert_summary(row)
+    print("[DONE] summary saved successfully")
+
+if __name__ == "__main__":
+    main()
